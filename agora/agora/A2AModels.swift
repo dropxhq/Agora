@@ -125,4 +125,14 @@ class Round {
     var toolResults: [ToolResult] = []
 }
 
-enum TaskState { case idle, working, completed, failed }
+enum TaskState { case idle, working, completed, failed
+
+    static func from(label: String) -> TaskState {
+        switch label {
+        case "working": return .working
+        case "completed": return .completed
+        case "failed": return .failed
+        default: return .idle
+        }
+    }
+}

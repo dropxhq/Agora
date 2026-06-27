@@ -1,21 +1,24 @@
 import SwiftUI
 
 struct ConversationView: View {
-    @AppStorage("serverURL") private var serverURL = "http://localhost:8000"
-    @State private var vm = ConversationVM()
+    let store: WorkspaceStore
+    let session: Session
+    let backend: Backend
+    var onEditBackend: () -> Void = {}
+
     @State private var input = ""
-    @State private var showSettings = false
+
+    private var vm: ConversationVM {
+        store.vm(for: session.id)
+    }
 
     var body: some View {
-        NavigationStack {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         if let errorMessage = vm.errorMessage {
-                            ConnectionErrorBanner(message: errorMessage) {
-                                showSettings = true
-                            }
+                            ConnectionErrorBanner(message: errorMessage, onOpenSettings: onEditBackend)
                         }
                         if !vm.rounds.isEmpty || vm.summary != nil {
                             TurnView(vm: vm)
@@ -40,26 +43,30 @@ struct ConversationView: View {
             }
             .padding()
         }
-        .navigationTitle("Agora")
+        .navigationTitle(session.title)
         .modifier(AgoraInlineNavigationTitleModifier())
-        .toolbar {
-            ToolbarItem(placement: .settingsButton) {
-                Button { showSettings = true } label: {
-                    Image(systemName: "gear")
-                }
-            }
+        .onAppear { bindVM() }
+        .onChange(of: session.id) { _, _ in bindVM() }
+    }
+
+    private func bindVM() {
+        vm.onChange = { [sessionId = session.id] in
+            store.persistSnapshot(for: sessionId)
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsView()
-        }
-        } // NavigationStack
     }
 
     private func submit() {
         guard !input.isEmpty else { return }
-        let url = URL(string: serverURL) ?? URL(string: "http://localhost:8000")!
-        vm.send(text: input, client: A2AClient(baseURL: url))
+        let text = input
         input = ""
+
+        if session.title == "新会话" {
+            let title = text.count > 24 ? String(text.prefix(24)) + "…" : text
+            store.renameSession(session, title: title)
+        }
+
+        let url = URL(string: backend.serverURL) ?? URL(string: "http://localhost:8000")!
+        vm.send(text: text, client: A2AClient(baseURL: url), contextId: session.contextId)
     }
 }
 
@@ -69,7 +76,6 @@ struct TurnView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // 进度泳道
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(vm.rounds.indices, id: \.self) { i in
@@ -85,14 +91,12 @@ struct TurnView: View {
                 .foregroundStyle(vm.state == .working ? .orange : .secondary)
             }
 
-            // 总结区（lastChunk 后才出现）
             if let summary = vm.summary {
                 Text(summary)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
             }
-
         }
     }
 }
@@ -109,7 +113,7 @@ struct ConnectionErrorBanner: View {
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Button("打开设置", action: onOpenSettings)
+            Button("编辑 Backend", action: onOpenSettings)
                 .font(.callout)
         }
         .padding(12)
@@ -166,16 +170,6 @@ private struct AgoraInlineNavigationTitleModifier: ViewModifier {
         content.navigationBarTitleDisplayMode(.inline)
 #else
         content
-#endif
-    }
-}
-
-private extension ToolbarItemPlacement {
-    static var settingsButton: ToolbarItemPlacement {
-#if os(iOS)
-        .topBarTrailing
-#else
-        .automatic
 #endif
     }
 }

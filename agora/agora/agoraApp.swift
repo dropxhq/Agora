@@ -4,7 +4,7 @@ import SwiftUI
 struct agoraApp: App {
     var body: some Scene {
         WindowGroup {
-            ConversationView()
+            MainView()
         }
 #if os(macOS)
         Settings {

@@ -11,7 +11,9 @@ class ConversationVM {
     private var summaryBuffer = ""
     private let decoder = JSONDecoder()
 
-    func send(text: String, client: A2AClient) {
+    var onChange: (() -> Void)?
+
+    func send(text: String, client: A2AClient, contextId: String) {
         rounds = []
         summary = nil
         summaryBuffer = ""
@@ -20,15 +22,66 @@ class ConversationVM {
 
         Task { @MainActor in
             do {
-                let stream = client.sendStreamingMessage(text: text)
+                let stream = client.sendStreamingMessage(text: text, contextId: contextId)
                 for try await data in stream {
                     apply(data)
                 }
             } catch {
                 self.errorMessage = ConnectionErrorMessage.message(for: error, serverURL: client.baseURL)
                 self.state = .failed
+                notifyChange()
             }
         }
+    }
+
+    func snapshot() -> SessionSnapshot {
+        SessionSnapshot(
+            rounds: rounds.map { round in
+                PersistedRound(
+                    reasoning: round.reasoning,
+                    toolCalls: round.toolCalls.map {
+                        PersistedToolCall(name: $0.name, args: $0.args)
+                    },
+                    toolResults: round.toolResults.map {
+                        PersistedToolResult(name: $0.name, result: $0.result, ok: $0.ok)
+                    }
+                )
+            },
+            summary: summary,
+            state: stateLabel,
+            errorMessage: errorMessage
+        )
+    }
+
+    func restore(from snapshot: SessionSnapshot) {
+        rounds = snapshot.rounds.map { persisted in
+            let round = Round()
+            round.reasoning = persisted.reasoning
+            round.toolCalls = persisted.toolCalls.map {
+                ToolCall(name: $0.name, args: $0.args)
+            }
+            round.toolResults = persisted.toolResults.map {
+                ToolResult(name: $0.name, result: $0.result, ok: $0.ok)
+            }
+            return round
+        }
+        summary = snapshot.summary
+        summaryBuffer = snapshot.summary ?? ""
+        state = TaskState.from(label: snapshot.state)
+        errorMessage = snapshot.errorMessage
+    }
+
+    private var stateLabel: String {
+        switch state {
+        case .idle: return "idle"
+        case .working: return "working"
+        case .completed: return "completed"
+        case .failed: return "failed"
+        }
+    }
+
+    private func notifyChange() {
+        onChange?()
     }
 
     @MainActor
@@ -47,6 +100,7 @@ class ConversationVM {
             if e.final == true {
                 state = e.status.state == "failed" ? .failed : .completed
             }
+            notifyChange()
             return
         }
 
@@ -57,6 +111,7 @@ class ConversationVM {
             if e.lastChunk == true {
                 summary = summaryBuffer
             }
+            notifyChange()
         }
     }
 
