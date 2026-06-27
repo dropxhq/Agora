@@ -7,46 +7,106 @@ struct ConversationView: View {
     var onEditBackend: () -> Void = {}
 
     @State private var input = ""
+    @State private var isTaskSidebarVisible = true
 
     private var vm: ConversationVM {
         store.vm(for: session.id)
     }
 
     var body: some View {
+        HStack(spacing: 0) {
+            conversationPanel
+
+            if isTaskSidebarVisible {
+                Divider()
+                TaskSidebarView(vm: vm) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isTaskSidebarVisible = false
+                    }
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isTaskSidebarVisible)
+        .navigationTitle(session.title)
+        .modifier(AgoraInlineNavigationTitleModifier())
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isTaskSidebarVisible.toggle()
+                    }
+                } label: {
+                    Label("Tasks", systemImage: "sidebar.right")
+                }
+                .help(isTaskSidebarVisible ? "收起 Task 边栏" : "展开 Task 边栏")
+            }
+        }
+        .onAppear { bindVM() }
+        .onChange(of: session.id) { _, _ in
+            bindVM()
+            input = ""
+        }
+    }
+
+    private var conversationPanel: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        if let task = vm.selectedTask {
+                            Text(task.prompt)
+                                .font(.body)
+                                .padding(12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                        }
+
                         if let errorMessage = vm.errorMessage {
                             ConnectionErrorBanner(message: errorMessage, onOpenSettings: onEditBackend)
                         }
-                        if !vm.rounds.isEmpty || vm.summary != nil {
+
+                        if vm.selectedTask == nil && vm.tasks.isEmpty {
+                            ContentUnavailableView {
+                                Label("开始对话", systemImage: "bubble.left.and.bubble.right")
+                            } description: {
+                                Text("输入问题发送，Task 将出现在右侧边栏")
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 240)
+                        } else if !vm.rounds.isEmpty || vm.summary != nil || vm.state == .working {
                             TurnView(vm: vm)
-                                .id("turn")
+                                .id("turn-\(vm.selectedTaskId ?? "")")
                         }
                     }
                     .padding()
                 }
                 .onChange(of: vm.rounds.count) { _, _ in
-                    proxy.scrollTo("turn", anchor: .bottom)
+                    proxy.scrollTo("turn-\(vm.selectedTaskId ?? "")", anchor: .bottom)
+                }
+                .onChange(of: vm.selectedTaskId) { _, _ in
+                    proxy.scrollTo("turn-\(vm.selectedTaskId ?? "")", anchor: .bottom)
                 }
             }
 
-            Divider()
-
             HStack {
-                TextField("输入问题...", text: $input)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { submit() }
-                Button("发送", action: submit)
-                    .disabled(input.isEmpty || vm.state == .working)
+                GlassInputBar(
+                    text: $input,
+                    placeholder: "输入问题...",
+                    isSendDisabled: vm.isStreaming,
+                    onSubmit: submit
+                )
             }
-            .padding()
+
+            Button {
+                store.addSession(to: backend.id)
+            } label: {
+                Label("新建会话", systemImage: "plus.message")
+                    .font(.callout)
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
         }
-        .navigationTitle(session.title)
-        .modifier(AgoraInlineNavigationTitleModifier())
-        .onAppear { bindVM() }
-        .onChange(of: session.id) { _, _ in bindVM() }
     }
 
     private func bindVM() {

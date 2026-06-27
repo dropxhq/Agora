@@ -135,4 +135,43 @@ enum TaskState { case idle, working, completed, failed
         default: return .idle
         }
     }
+
+    var label: String {
+        switch self {
+        case .idle: return "idle"
+        case .working: return "working"
+        case .completed: return "completed"
+        case .failed: return "failed"
+        }
+    }
+}
+
+@Observable
+class AITask: Identifiable {
+    let id: String
+    var prompt: String
+    var rounds: [Round] = []
+    var summary: String? = nil
+    var state: TaskState = .working
+    var errorMessage: String? = nil
+    let createdAt: Date
+
+    var summaryBuffer = ""
+
+    init(id: String, prompt: String, state: TaskState = .working, createdAt: Date = Date()) {
+        self.id = id
+        self.prompt = prompt
+        self.state = state
+        self.createdAt = createdAt
+    }
+
+    var promptPreview: String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 28 { return trimmed }
+        return String(trimmed.prefix(28)) + "…"
+    }
+
+    var taskIdSuffix: String {
+        String(id.suffix(8))
+    }
 }

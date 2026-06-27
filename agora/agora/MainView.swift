@@ -73,6 +73,15 @@ struct SidebarView: View {
                     .onDelete { offsets in
                         deleteSessions(at: offsets, backendId: backend.id)
                     }
+
+                    Button {
+                        store.addSession(to: backend.id)
+                    } label: {
+                        Label("新建会话", systemImage: "plus.message")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 } header: {
                     HStack {
                         Label(backend.name, systemImage: "server.rack")

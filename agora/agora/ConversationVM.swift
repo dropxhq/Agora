@@ -3,22 +3,39 @@ import Observation
 
 @Observable
 class ConversationVM {
-    var rounds: [Round] = []
-    var summary: String? = nil
-    var state: TaskState = .idle
-    var errorMessage: String? = nil
+    var tasks: [AITask] = []
+    var selectedTaskId: String?
 
-    private var summaryBuffer = ""
+    private var pendingPrompt: String?
+    private var streamingTaskId: String?
     private let decoder = JSONDecoder()
 
     var onChange: (() -> Void)?
 
+    var selectedTask: AITask? {
+        if let id = selectedTaskId {
+            return tasks.first { $0.id == id }
+        }
+        return tasks.last
+    }
+
+    var rounds: [Round] { selectedTask?.rounds ?? [] }
+    var summary: String? { selectedTask?.summary }
+    var state: TaskState { selectedTask?.state ?? .idle }
+    var errorMessage: String? { selectedTask?.errorMessage }
+
+    var isStreaming: Bool {
+        tasks.contains { $0.state == .working }
+    }
+
+    func selectTask(_ id: String) {
+        selectedTaskId = id
+        notifyChange()
+    }
+
     func send(text: String, client: A2AClient, contextId: String) {
-        rounds = []
-        summary = nil
-        summaryBuffer = ""
-        state = .working
-        errorMessage = nil
+        pendingPrompt = text
+        streamingTaskId = nil
 
         Task { @MainActor in
             do {
@@ -26,35 +43,56 @@ class ConversationVM {
                 for try await data in stream {
                     apply(data)
                 }
+                pendingPrompt = nil
             } catch {
-                self.errorMessage = ConnectionErrorMessage.message(for: error, serverURL: client.baseURL)
-                self.state = .failed
-                notifyChange()
+                handleStreamError(error, serverURL: client.baseURL)
             }
         }
     }
 
     func snapshot() -> SessionSnapshot {
         SessionSnapshot(
-            rounds: rounds.map { round in
-                PersistedRound(
-                    reasoning: round.reasoning,
-                    toolCalls: round.toolCalls.map {
-                        PersistedToolCall(name: $0.name, args: $0.args)
+            tasks: tasks.map { task in
+                PersistedTask(
+                    id: task.id,
+                    prompt: task.prompt,
+                    rounds: task.rounds.map { round in
+                        PersistedRound(
+                            reasoning: round.reasoning,
+                            toolCalls: round.toolCalls.map {
+                                PersistedToolCall(name: $0.name, args: $0.args)
+                            },
+                            toolResults: round.toolResults.map {
+                                PersistedToolResult(name: $0.name, result: $0.result, ok: $0.ok)
+                            }
+                        )
                     },
-                    toolResults: round.toolResults.map {
-                        PersistedToolResult(name: $0.name, result: $0.result, ok: $0.ok)
-                    }
+                    summary: task.summary,
+                    state: task.state.label,
+                    errorMessage: task.errorMessage,
+                    createdAt: task.createdAt
                 )
             },
-            summary: summary,
-            state: stateLabel,
-            errorMessage: errorMessage
+            selectedTaskId: selectedTaskId
         )
     }
 
     func restore(from snapshot: SessionSnapshot) {
-        rounds = snapshot.rounds.map { persisted in
+        if let persistedTasks = snapshot.tasks, !persistedTasks.isEmpty {
+            tasks = persistedTasks.map { restoreTask(from: $0) }
+            selectedTaskId = snapshot.selectedTaskId ?? tasks.last?.id
+            return
+        }
+
+        // Migrate legacy single-task snapshot
+        guard let legacyRounds = snapshot.rounds else {
+            tasks = []
+            selectedTaskId = nil
+            return
+        }
+
+        let task = AITask(id: UUID().uuidString, prompt: "历史任务", state: .idle)
+        task.rounds = legacyRounds.map { persisted in
             let round = Round()
             round.reasoning = persisted.reasoning
             round.toolCalls = persisted.toolCalls.map {
@@ -65,19 +103,36 @@ class ConversationVM {
             }
             return round
         }
-        summary = snapshot.summary
-        summaryBuffer = snapshot.summary ?? ""
-        state = TaskState.from(label: snapshot.state)
-        errorMessage = snapshot.errorMessage
+        task.summary = snapshot.summary
+        task.summaryBuffer = snapshot.summary ?? ""
+        task.state = TaskState.from(label: snapshot.state ?? "idle")
+        task.errorMessage = snapshot.errorMessage
+        tasks = [task]
+        selectedTaskId = task.id
     }
 
-    private var stateLabel: String {
-        switch state {
-        case .idle: return "idle"
-        case .working: return "working"
-        case .completed: return "completed"
-        case .failed: return "failed"
+    private func restoreTask(from persisted: PersistedTask) -> AITask {
+        let task = AITask(
+            id: persisted.id,
+            prompt: persisted.prompt,
+            state: TaskState.from(label: persisted.state),
+            createdAt: persisted.createdAt
+        )
+        task.rounds = persisted.rounds.map { persistedRound in
+            let round = Round()
+            round.reasoning = persistedRound.reasoning
+            round.toolCalls = persistedRound.toolCalls.map {
+                ToolCall(name: $0.name, args: $0.args)
+            }
+            round.toolResults = persistedRound.toolResults.map {
+                ToolResult(name: $0.name, result: $0.result, ok: $0.ok)
+            }
+            return round
         }
+        task.summary = persisted.summary
+        task.summaryBuffer = persisted.summary ?? ""
+        task.errorMessage = persisted.errorMessage
+        return task
     }
 
     private func notifyChange() {
@@ -85,50 +140,86 @@ class ConversationVM {
     }
 
     @MainActor
+    private func handleStreamError(_ error: Error, serverURL: URL) {
+        let message = ConnectionErrorMessage.message(for: error, serverURL: serverURL)
+        if let taskId = streamingTaskId, let task = tasks.first(where: { $0.id == taskId }) {
+            task.errorMessage = message
+            task.state = .failed
+        } else if let prompt = pendingPrompt {
+            let task = AITask(id: UUID().uuidString, prompt: prompt, state: .failed)
+            task.errorMessage = message
+            tasks.append(task)
+            selectedTaskId = task.id
+        }
+        pendingPrompt = nil
+        streamingTaskId = nil
+        notifyChange()
+    }
+
+    @MainActor
     private func apply(_ json: String) {
         guard let data = json.data(using: .utf8) else { return }
 
-        // Try StatusUpdateEvent
         if let e = try? decoder.decode(TaskStatusUpdateEvent.self, from: data) {
+            let task = task(for: e.taskId)
             if let msg = e.status.message {
                 for part in msg.parts {
                     if let step = part.data {
-                        upsertRound(step)
+                        upsertRound(step, in: task)
                     }
                 }
             }
-            if e.final == true {
-                state = e.status.state == "failed" ? .failed : .completed
+            if e.status.state == "failed" {
+                task.state = .failed
+            } else if e.final == true {
+                task.state = .completed
+            } else if task.state != .failed {
+                task.state = .working
             }
             notifyChange()
             return
         }
 
-        // Try ArtifactUpdateEvent
         if let e = try? decoder.decode(TaskArtifactUpdateEvent.self, from: data) {
+            let task = task(for: e.taskId)
             let text = e.artifact.parts.compactMap(\.text).joined()
-            summaryBuffer += text
+            task.summaryBuffer += text
             if e.lastChunk == true {
-                summary = summaryBuffer
+                task.summary = task.summaryBuffer
             }
             notifyChange()
         }
     }
 
-    private func upsertRound(_ step: ReActStep) {
+    private func task(for taskId: String) -> AITask {
+        if let existing = tasks.first(where: { $0.id == taskId }) {
+            streamingTaskId = taskId
+            return existing
+        }
+
+        let prompt = pendingPrompt ?? "新任务"
+        pendingPrompt = nil
+        let task = AITask(id: taskId, prompt: prompt, state: .working)
+        tasks.append(task)
+        streamingTaskId = taskId
+        selectedTaskId = taskId
+        return task
+    }
+
+    private func upsertRound(_ step: ReActStep, in task: AITask) {
         let idx = step.round - 1
         guard idx >= 0 else { return }
-        while rounds.count <= idx { rounds.append(Round()) }
+        while task.rounds.count <= idx { task.rounds.append(Round()) }
         switch step.step {
         case "reasoning":
-            rounds[idx].reasoning = step.text
+            task.rounds[idx].reasoning = step.text
         case "tool_call":
-            rounds[idx].toolCalls.append(ToolCall(
+            task.rounds[idx].toolCalls.append(ToolCall(
                 name: step.name ?? "",
                 args: step.args ?? [:]
             ))
         case "tool_result":
-            rounds[idx].toolResults.append(ToolResult(
+            task.rounds[idx].toolResults.append(ToolResult(
                 name: step.name ?? "",
                 result: step.result ?? "",
                 ok: step.ok ?? true

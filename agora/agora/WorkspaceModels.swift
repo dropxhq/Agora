@@ -45,10 +45,24 @@ struct PersistedRound: Codable {
     var toolResults: [PersistedToolResult]
 }
 
-struct SessionSnapshot: Codable {
+struct PersistedTask: Codable, Identifiable {
+    var id: String
+    var prompt: String
     var rounds: [PersistedRound]
     var summary: String?
     var state: String
+    var errorMessage: String?
+    var createdAt: Date
+}
+
+struct SessionSnapshot: Codable {
+    var tasks: [PersistedTask]?
+    var selectedTaskId: String?
+
+    // Legacy single-task fields (migration)
+    var rounds: [PersistedRound]?
+    var summary: String?
+    var state: String?
     var errorMessage: String?
 }
 
