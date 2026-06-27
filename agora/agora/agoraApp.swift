@@ -1,32 +1,17 @@
-//
-//  agoraApp.swift
-//  agora
-//
-//  Created by Monster 林 on 2026/5/30.
-//
-
 import SwiftUI
-import SwiftData
 
 @main
 struct agoraApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    @AppStorage("serverURL") var serverURL = "http://localhost:8000"
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ConversationView(client: A2AClient(baseURL: URL(string: serverURL) ?? URL(string: "http://localhost:8000")!))
         }
-        .modelContainer(sharedModelContainer)
+#if os(macOS)
+        Settings {
+            SettingsView()
+        }
+#endif
     }
 }
