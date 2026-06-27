@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ConversationView: View {
-    let client: A2AClient
+    @AppStorage("serverURL") private var serverURL = "http://localhost:8000"
     @State private var vm = ConversationVM()
     @State private var input = ""
     @State private var showSettings = false
@@ -12,6 +12,11 @@ struct ConversationView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        if let errorMessage = vm.errorMessage {
+                            ConnectionErrorBanner(message: errorMessage) {
+                                showSettings = true
+                            }
+                        }
                         if !vm.rounds.isEmpty || vm.summary != nil {
                             TurnView(vm: vm)
                                 .id("turn")
@@ -36,23 +41,13 @@ struct ConversationView: View {
             .padding()
         }
         .navigationTitle("Agora")
-#if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-#endif
+        .modifier(AgoraInlineNavigationTitleModifier())
         .toolbar {
-#if os(iOS)
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .settingsButton) {
                 Button { showSettings = true } label: {
                     Image(systemName: "gear")
                 }
             }
-#else
-            ToolbarItem(placement: .automatic) {
-                Button { showSettings = true } label: {
-                    Image(systemName: "gear")
-                }
-            }
-#endif
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -62,7 +57,8 @@ struct ConversationView: View {
 
     private func submit() {
         guard !input.isEmpty else { return }
-        vm.send(text: input, client: client)
+        let url = URL(string: serverURL) ?? URL(string: "http://localhost:8000")!
+        vm.send(text: input, client: A2AClient(baseURL: url))
         input = ""
     }
 }
@@ -97,13 +93,28 @@ struct TurnView: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
             }
 
-            // 错误提示
-            if let err = vm.errorMessage {
-                Label(err, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
-                    .font(.caption)
-            }
         }
+    }
+}
+
+struct ConnectionErrorBanner: View {
+    let message: String
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("无法连接后端", systemImage: "wifi.slash")
+                .font(.headline)
+                .foregroundStyle(.red)
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("打开设置", action: onOpenSettings)
+                .font(.callout)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -146,5 +157,25 @@ struct RoundView: View {
         }
         .padding(8)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct AgoraInlineNavigationTitleModifier: ViewModifier {
+    func body(content: Content) -> some View {
+#if os(iOS)
+        content.navigationBarTitleDisplayMode(.inline)
+#else
+        content
+#endif
+    }
+}
+
+private extension ToolbarItemPlacement {
+    static var settingsButton: ToolbarItemPlacement {
+#if os(iOS)
+        .topBarTrailing
+#else
+        .automatic
+#endif
     }
 }

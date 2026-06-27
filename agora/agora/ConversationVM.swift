@@ -25,7 +25,7 @@ class ConversationVM {
                     apply(data)
                 }
             } catch {
-                self.errorMessage = error.localizedDescription
+                self.errorMessage = ConnectionErrorMessage.message(for: error, serverURL: client.baseURL)
                 self.state = .failed
             }
         }
@@ -81,5 +81,51 @@ class ConversationVM {
         default:
             break
         }
+    }
+}
+
+enum ConnectionErrorMessage {
+    static func message(for error: Error, serverURL: URL) -> String {
+        let host = serverURL.host ?? serverURL.absoluteString
+        var lines: [String] = []
+
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cannotFindHost, .dnsLookupFailed:
+                lines.append("无法找到服务器「\(host)」。")
+            case .cannotConnectToHost:
+                lines.append("无法连接到「\(host)」。")
+            case .notConnectedToInternet:
+                lines.append("当前无网络连接。")
+            case .timedOut:
+                lines.append("连接超时。")
+            case .badServerResponse:
+                lines.append("服务器响应异常。")
+            case .secureConnectionFailed:
+                lines.append("无法建立安全连接。")
+            default:
+                lines.append("连接失败。")
+            }
+        } else {
+            lines.append("连接失败。")
+        }
+
+        lines.append("请确认后端已启动，并在设置中检查 Server URL（当前：\(serverURL.absoluteString)）。")
+
+        if let hint = localhostHint(for: serverURL) {
+            lines.append(hint)
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func localhostHint(for url: URL) -> String? {
+        guard let host = url.host?.lowercased(),
+              host == "localhost" || host == "127.0.0.1" else { return nil }
+#if os(iOS)
+        return "在真机上运行时，localhost 指向手机本身，请改用 Mac 的局域网 IP。"
+#else
+        return nil
+#endif
     }
 }
