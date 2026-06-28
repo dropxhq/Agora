@@ -63,27 +63,27 @@ struct Message: Codable {
     let parts: [Part]
 }
 
-// MARK: - Events (A2A v0.3)
+// MARK: - Events (A2A 1.0)
 
 struct TaskStatus: Codable {
     let state: String
     let message: Message?
 }
 
+struct A2ATask: Codable {
+    let id: String
+    let contextId: String?
+    let status: TaskStatus
+}
+
 struct TaskStatusUpdateEvent: Codable {
     let taskId: String
     let contextId: String?
     let status: TaskStatus
-    let final: Bool?
-
-    enum CodingKeys: String, CodingKey {
-        case taskId = "id"
-        case contextId = "context_id"
-        case status, final
-    }
 }
 
 struct Artifact: Codable {
+    let artifactId: String?
     let name: String?
     let parts: [Part]
 }
@@ -94,12 +94,6 @@ struct TaskArtifactUpdateEvent: Codable {
     let artifact: Artifact
     let append: Bool?
     let lastChunk: Bool?
-
-    enum CodingKeys: String, CodingKey {
-        case taskId = "id"
-        case contextId = "context_id"
-        case artifact, append, lastChunk
-    }
 }
 
 // MARK: - Client Models
@@ -129,10 +123,25 @@ enum TaskState { case idle, working, completed, failed
 
     static func from(label: String) -> TaskState {
         switch label {
-        case "working": return .working
-        case "completed": return .completed
-        case "failed": return .failed
-        default: return .idle
+        case "working", "TASK_STATE_WORKING", "TASK_STATE_SUBMITTED":
+            return .working
+        case "completed", "TASK_STATE_COMPLETED":
+            return .completed
+        case "failed", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED":
+            return .failed
+        default:
+            return .idle
+        }
+    }
+
+    static func isTerminal(_ state: String) -> Bool {
+        switch state {
+        case "completed", "failed",
+             "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
+             "TASK_STATE_CANCELED", "TASK_STATE_REJECTED":
+            return true
+        default:
+            return false
         }
     }
 
@@ -148,8 +157,10 @@ enum TaskState { case idle, working, completed, failed
 
 @Observable
 class AITask: Identifiable {
-    let id: String
+    var id: String
     var prompt: String
+    var parentTaskId: String?
+    var subtaskIndex: Int?
     var rounds: [Round] = []
     var summary: String? = nil
     var state: TaskState = .working
@@ -158,9 +169,20 @@ class AITask: Identifiable {
 
     var summaryBuffer = ""
 
-    init(id: String, prompt: String, state: TaskState = .working, createdAt: Date = Date()) {
+    var isSubTask: Bool { parentTaskId != nil }
+
+    init(
+        id: String,
+        prompt: String,
+        parentTaskId: String? = nil,
+        subtaskIndex: Int? = nil,
+        state: TaskState = .working,
+        createdAt: Date = Date()
+    ) {
         self.id = id
         self.prompt = prompt
+        self.parentTaskId = parentTaskId
+        self.subtaskIndex = subtaskIndex
         self.state = state
         self.createdAt = createdAt
     }

@@ -4,17 +4,13 @@ struct TaskSidebarView: View {
     let vm: ConversationVM
     var onCollapse: () -> Void = {}
 
-    private var sortedTasks: [AITask] {
-        vm.tasks.sorted { $0.createdAt > $1.createdAt }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Tasks")
+                Text("子任务")
                     .font(.headline)
                 Spacer()
-                Text("\(vm.tasks.count)")
+                Text("\(vm.subTasks.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
@@ -33,20 +29,20 @@ struct TaskSidebarView: View {
 
             Divider()
 
-            if vm.tasks.isEmpty {
+            if vm.subTasks.isEmpty {
                 ContentUnavailableView {
-                    Label("暂无 Task", systemImage: "tray")
+                    Label("暂无子任务", systemImage: "tray")
                 } description: {
-                    Text("发送消息后将在此列出 A2A 任务")
+                    Text("多任务流程执行时，子任务将在此列出")
                 }
                 .frame(maxHeight: .infinity)
             } else {
                 List(selection: Binding(
-                    get: { vm.selectedTaskId },
-                    set: { if let id = $0 { vm.selectTask(id) } }
+                    get: { vm.selectedSubTaskId },
+                    set: { if let id = $0 { vm.selectSubTask(id) } }
                 )) {
-                    ForEach(sortedTasks) { task in
-                        TaskRow(task: task)
+                    ForEach(vm.subTasks) { task in
+                        SubTaskRow(task: task)
                             .tag(task.id)
                     }
                 }
@@ -58,12 +54,19 @@ struct TaskSidebarView: View {
     }
 }
 
-private struct TaskRow: View {
+private struct SubTaskRow: View {
     let task: AITask
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
+                if let index = task.subtaskIndex {
+                    Text("\(index)")
+                        .font(.caption2.weight(.semibold).monospaced())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                        .background(.quaternary, in: Circle())
+                }
                 Image(systemName: stateIcon)
                     .foregroundStyle(stateColor)
                     .font(.caption)

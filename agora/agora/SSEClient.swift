@@ -13,11 +13,19 @@ struct SSEClient {
                     var dataBuffer = ""
                     for try await line in bytes.lines {
                         if line.hasPrefix("data:") {
+                            // URLSession.bytes.lines omits blank SSE separator lines, so
+                            // flush the previous payload when the next data: line arrives.
+                            if !dataBuffer.isEmpty {
+                                continuation.yield(dataBuffer)
+                            }
                             dataBuffer = String(line.dropFirst(5)).trimmingCharacters(in: .init(charactersIn: " "))
                         } else if line.isEmpty, !dataBuffer.isEmpty {
                             continuation.yield(dataBuffer)
                             dataBuffer = ""
                         }
+                    }
+                    if !dataBuffer.isEmpty {
+                        continuation.yield(dataBuffer)
                     }
                     continuation.finish()
                 } catch {

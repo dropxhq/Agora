@@ -266,7 +266,7 @@ enum AgentCardErrorMessage {
             case .timedOut:
                 lines.append("连接超时。")
             case .badServerResponse, .fileDoesNotExist:
-                lines.append("未找到 /.well-known/agent.json 或 agent-card.json。")
+                lines.append("未找到 /.well-known/agent-card.json。")
             default:
                 break
             }

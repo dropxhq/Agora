@@ -14,10 +14,12 @@ struct ConversationView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            conversationPanel
+        @Bindable var vm = store.vm(for: session.id)
 
-            if isTaskSidebarVisible {
+        HStack(spacing: 0) {
+            conversationPanel(vm: vm)
+
+            if isTaskSidebarVisible && vm.hasSubTasks {
                 Divider()
                 TaskSidebarView(vm: vm) {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -28,63 +30,80 @@ struct ConversationView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isTaskSidebarVisible)
+        .animation(.easeInOut(duration: 0.2), value: vm.hasSubTasks)
         .navigationTitle(session.title)
         .modifier(AgoraInlineNavigationTitleModifier())
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isTaskSidebarVisible.toggle()
+                if vm.hasSubTasks {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isTaskSidebarVisible.toggle()
+                        }
+                    } label: {
+                        Label("子任务", systemImage: "sidebar.right")
                     }
-                } label: {
-                    Label("Tasks", systemImage: "sidebar.right")
+                    .help(isTaskSidebarVisible ? "收起子任务边栏" : "展开子任务边栏")
                 }
-                .help(isTaskSidebarVisible ? "收起 Task 边栏" : "展开 Task 边栏")
             }
         }
-        .onAppear { bindVM() }
+        .onAppear {
+            bindVM()
+            if vm.hasSubTasks {
+                isTaskSidebarVisible = true
+            }
+        }
+        .onChange(of: vm.hasSubTasks) { _, hasSubTasks in
+            if hasSubTasks {
+                isTaskSidebarVisible = true
+            }
+        }
         .onChange(of: session.id) { _, _ in
             bindVM()
             input = ""
         }
     }
 
-    private var conversationPanel: some View {
+    private func conversationPanel(vm: ConversationVM) -> some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        if let task = vm.selectedTask {
-                            Text(task.prompt)
-                                .font(.body)
-                                .padding(12)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                        if let mainTask = vm.mainTask {
+                            MainTaskHeader(task: mainTask, subTaskCount: vm.subTasks.count)
                         }
 
                         if let errorMessage = vm.errorMessage {
                             ConnectionErrorBanner(message: errorMessage, onOpenSettings: onEditBackend)
                         }
 
-                        if vm.selectedTask == nil && vm.tasks.isEmpty {
+                        if vm.mainTask == nil && vm.tasks.isEmpty {
                             AgentCardEmptyStateView(
                                 backend: backend,
                                 store: store,
                                 onEditBackend: onEditBackend
                             )
                             .frame(maxWidth: .infinity, minHeight: 240)
-                        } else if !vm.rounds.isEmpty || vm.summary != nil || vm.state == .working {
-                            TurnView(vm: vm)
-                                .id("turn-\(vm.selectedTaskId ?? "")")
+                        } else if vm.hasSubTasks {
+                            if let subTask = vm.displayTask {
+                                SubTaskSection(task: subTask)
+                                    .id("subtask-\(subTask.id)")
+                            }
+                        } else if let task = vm.mainTask {
+                            TurnView(task: task)
+                                .id("turn-\(task.id)")
                         }
                     }
                     .padding()
                 }
                 .onChange(of: vm.rounds.count) { _, _ in
-                    proxy.scrollTo("turn-\(vm.selectedTaskId ?? "")", anchor: .bottom)
+                    scrollToCurrentTurn(proxy: proxy, vm: vm)
                 }
-                .onChange(of: vm.selectedTaskId) { _, _ in
-                    proxy.scrollTo("turn-\(vm.selectedTaskId ?? "")", anchor: .bottom)
+                .onChange(of: vm.selectedSubTaskId) { _, _ in
+                    scrollToCurrentTurn(proxy: proxy, vm: vm)
+                }
+                .onChange(of: vm.summary) { _, _ in
+                    scrollToCurrentTurn(proxy: proxy, vm: vm)
                 }
             }
 
@@ -93,7 +112,7 @@ struct ConversationView: View {
                     text: $input,
                     placeholder: "输入问题...",
                     isSendDisabled: vm.isStreaming,
-                    onSubmit: submit
+                    onSubmit: { submit(vm: vm) }
                 )
             }
 
@@ -109,13 +128,21 @@ struct ConversationView: View {
         }
     }
 
+    private func scrollToCurrentTurn(proxy: ScrollViewProxy, vm: ConversationVM) {
+        if vm.hasSubTasks, let id = vm.displayTask?.id {
+            proxy.scrollTo("subtask-\(id)", anchor: .bottom)
+        } else if let id = vm.mainTask?.id {
+            proxy.scrollTo("turn-\(id)", anchor: .bottom)
+        }
+    }
+
     private func bindVM() {
         vm.onChange = { [sessionId = session.id] in
             store.persistSnapshot(for: sessionId)
         }
     }
 
-    private func submit() {
+    private func submit(vm: ConversationVM) {
         guard !input.isEmpty else { return }
         let text = input
         input = ""
@@ -130,28 +157,102 @@ struct ConversationView: View {
     }
 }
 
+struct MainTaskHeader: View {
+    let task: AITask
+    let subTaskCount: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: stateIcon)
+                    .foregroundStyle(stateColor)
+                Text("主任务")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if subTaskCount > 0 {
+                    Text("\(subTaskCount) 个子任务")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+                Text(stateLabel)
+                    .font(.caption2)
+                    .foregroundStyle(stateColor)
+            }
+
+            Text(task.prompt)
+                .font(.body)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var stateIcon: String {
+        switch task.state {
+        case .working: return "circle.dotted"
+        case .completed: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        case .idle: return "circle"
+        }
+    }
+
+    private var stateColor: Color {
+        switch task.state {
+        case .working: return .orange
+        case .completed: return .green
+        case .failed: return .red
+        case .idle: return .secondary
+        }
+    }
+
+    private var stateLabel: String {
+        switch task.state {
+        case .working: return "执行中"
+        case .completed: return "已完成"
+        case .failed: return "失败"
+        case .idle: return "空闲"
+        }
+    }
+}
+
+struct SubTaskSection: View {
+    let task: AITask
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let index = task.subtaskIndex {
+                Text("子任务 \(index)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            TurnView(task: task)
+        }
+    }
+}
+
 struct TurnView: View {
-    let vm: ConversationVM
+    let task: AITask
     @State private var expanded = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(vm.rounds.indices, id: \.self) { i in
-                        RoundView(round: vm.rounds[i], index: i + 1)
+                    ForEach(task.rounds.indices, id: \.self) { i in
+                        RoundView(round: task.rounds[i], index: i + 1)
                     }
                 }
                 .padding(.leading, 4)
             } label: {
                 Label(
-                    vm.state == .working ? "执行中..." : "执行过程",
-                    systemImage: vm.state == .working ? "circle.dotted" : "checkmark.circle"
+                    task.state == .working ? "执行中..." : "执行过程",
+                    systemImage: task.state == .working ? "circle.dotted" : "checkmark.circle"
                 )
-                .foregroundStyle(vm.state == .working ? .orange : .secondary)
+                .foregroundStyle(task.state == .working ? .orange : .secondary)
             }
 
-            if let summary = vm.summary {
+            if let summary = task.summary {
                 Text(summary)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
