@@ -45,6 +45,35 @@ class A2AClient {
         let resp = try JSONDecoder().decode(JSONRPCResponse<TaskStatusResult>.self, from: data)
         return resp.result.status
     }
+
+    /// Fetch agent card from well-known discovery endpoint.
+    func fetchAgentCard() async throws -> AgentCard {
+        let candidates = ["agent-card.json", "agent.json"]
+        var lastError: Error = URLError(.fileDoesNotExist)
+
+        for filename in candidates {
+            let url = wellKnownURL(for: filename)
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse,
+                      (200...299).contains(http.statusCode) else {
+                    lastError = URLError(.badServerResponse)
+                    continue
+                }
+                return try JSONDecoder().decode(AgentCard.self, from: data)
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError
+    }
+
+    private func wellKnownURL(for filename: String) -> URL {
+        baseURL
+            .appendingPathComponent(".well-known")
+            .appendingPathComponent(filename)
+    }
 }
 
 private struct JSONRPCResponse<T: Decodable>: Decodable {

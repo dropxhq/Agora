@@ -67,11 +67,11 @@ struct ConversationView: View {
                         }
 
                         if vm.selectedTask == nil && vm.tasks.isEmpty {
-                            ContentUnavailableView {
-                                Label("开始对话", systemImage: "bubble.left.and.bubble.right")
-                            } description: {
-                                Text("输入问题发送，Task 将出现在右侧边栏")
-                            }
+                            AgentCardEmptyStateView(
+                                backend: backend,
+                                store: store,
+                                onEditBackend: onEditBackend
+                            )
                             .frame(maxWidth: .infinity, minHeight: 240)
                         } else if !vm.rounds.isEmpty || vm.summary != nil || vm.state == .working {
                             TurnView(vm: vm)

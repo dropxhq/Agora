@@ -9,6 +9,9 @@ class WorkspaceStore {
 
     private var snapshots: [UUID: SessionSnapshot] = [:]
     private var vms: [UUID: ConversationVM] = [:]
+    private var agentCards: [UUID: AgentCard] = [:]
+    private var agentCardErrors: [UUID: String] = [:]
+    private var agentCardTasks: [UUID: Task<Void, Never>] = [:]
     private let storageKey = "agora.workspace.v1"
 
     init() {
@@ -71,7 +74,11 @@ class WorkspaceStore {
 
     func updateBackend(_ backend: Backend) {
         guard let idx = backends.firstIndex(where: { $0.id == backend.id }) else { return }
+        let previousURL = backends[idx].serverURL
         backends[idx] = backend
+        if previousURL != backend.serverURL {
+            invalidateAgentCard(for: backend.id)
+        }
         save()
     }
 
@@ -120,6 +127,43 @@ class WorkspaceStore {
         var updated = session
         updated.title = title
         updateSession(updated)
+    }
+
+    func agentCard(for backendId: UUID) -> AgentCard? {
+        agentCards[backendId]
+    }
+
+    func agentCardError(for backendId: UUID) -> String? {
+        agentCardErrors[backendId]
+    }
+
+    func isLoadingAgentCard(for backendId: UUID) -> Bool {
+        agentCardTasks[backendId] != nil && agentCards[backendId] == nil && agentCardErrors[backendId] == nil
+    }
+
+    func loadAgentCard(for backend: Backend) {
+        let backendId = backend.id
+        if agentCards[backendId] != nil { return }
+        if agentCardTasks[backendId] != nil { return }
+
+        agentCardTasks[backendId] = Task { @MainActor in
+            defer { agentCardTasks[backendId] = nil }
+            do {
+                let url = URL(string: backend.serverURL) ?? URL(string: "http://localhost:8000")!
+                let card = try await A2AClient(baseURL: url).fetchAgentCard()
+                agentCards[backendId] = card
+                agentCardErrors[backendId] = nil
+            } catch {
+                agentCardErrors[backendId] = AgentCardErrorMessage.message(for: error, serverURL: backend.serverURL)
+            }
+        }
+    }
+
+    func invalidateAgentCard(for backendId: UUID) {
+        agentCards.removeValue(forKey: backendId)
+        agentCardErrors.removeValue(forKey: backendId)
+        agentCardTasks[backendId]?.cancel()
+        agentCardTasks[backendId] = nil
     }
 
     // MARK: - Persistence

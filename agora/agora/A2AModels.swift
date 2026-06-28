@@ -175,3 +175,38 @@ class AITask: Identifiable {
         String(id.suffix(8))
     }
 }
+
+// MARK: - Agent Card (A2A discovery)
+
+struct AgentProvider: Codable, Equatable {
+    var organization: String?
+    var url: String?
+}
+
+struct AgentCapabilities: Codable, Equatable {
+    var streaming: Bool?
+    var pushNotifications: Bool?
+}
+
+struct AgentSkill: Codable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let description: String
+    var tags: [String]?
+    var examples: [String]?
+}
+
+struct AgentCard: Codable, Equatable {
+    let name: String
+    let description: String
+    let url: String
+    let version: String
+    var protocolVersion: String?
+    var capabilities: AgentCapabilities?
+    var defaultInputModes: [String]?
+    var defaultOutputModes: [String]?
+    var skills: [AgentSkill]?
+    var provider: AgentProvider?
+    var documentationUrl: String?
+    var iconUrl: String?
+}
