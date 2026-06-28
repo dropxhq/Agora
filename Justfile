@@ -14,4 +14,4 @@ a2a-demo:
     echo "  在 Agora 客户端 Backend 中填入上述地址即可调试"
     echo "  按 Ctrl+C 停止"
     echo ""
-    exec uv run python -m a2a_demo.server
+    exec uv run python -m a2a_demo

@@ -1,0 +1,108 @@
+"""Entry point for the Agora A2A demo server (FastAPI + a2a-sdk)."""
+
+from __future__ import annotations
+
+import uvicorn
+from fastapi import FastAPI
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.request_handlers.response_helpers import agent_card_to_dict
+from a2a.server.routes import add_a2a_routes_to_fastapi, create_jsonrpc_routes
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+
+from a2a_demo.agent_executor import MockAgentExecutor
+
+SERVER_HOST = "0.0.0.0"
+SERVER_PORT = 8000
+SERVER_URL = f"http://localhost:{SERVER_PORT}"
+
+
+def _build_skills() -> tuple[AgentSkill, AgentSkill]:
+    mock_react = AgentSkill(
+        id="mock-react",
+        name="Mock ReAct",
+        description="Returns simulated reasoning, tool calls, and summary.",
+        input_modes=["text/plain"],
+        output_modes=["text/plain"],
+        tags=["a2a", "mock", "react"],
+    )
+    multi_task = AgentSkill(
+        id="mock-multi-task",
+        name="Multi-Task Demo",
+        description=(
+            "Orchestrates multiple sub-tasks in one context. "
+            "Trigger with a message containing 'multi task' or '多任务'."
+        ),
+        input_modes=["text/plain"],
+        output_modes=["text/plain"],
+        tags=["a2a", "mock", "multi-task"],
+        examples=[
+            "multi task demo",
+            "多任务：收集背景信息；检索相关资料；整理总结",
+        ],
+    )
+    return mock_react, multi_task
+
+
+def _build_public_agent_card() -> AgentCard:
+    mock_react, multi_task = _build_skills()
+    return AgentCard(
+        name="Agora A2A Demo Agent",
+        description="Mock A2A server for Agora client debugging.",
+        version="0.1.0",
+        default_input_modes=["text/plain"],
+        default_output_modes=["text/plain"],
+        capabilities=AgentCapabilities(streaming=True),
+        supported_interfaces=[
+            AgentInterface(
+                protocol_binding="JSONRPC",
+                url=SERVER_URL,
+                protocol_version="1.0",
+            )
+        ],
+        skills=[mock_react, multi_task],
+    )
+
+
+def _create_agent_card_routes(agent_card: AgentCard) -> list[Route]:
+    """Agent card route with Agora legacy fields on the JSON response."""
+
+    async def _get_agent_card(_: Request) -> JSONResponse:
+        card = agent_card_to_dict(agent_card)
+        card.setdefault("url", SERVER_URL)
+        card.setdefault("protocolVersion", "1.0")
+        return JSONResponse(card)
+
+    return [
+        Route(
+            path="/.well-known/agent-card.json",
+            endpoint=_get_agent_card,
+            methods=["GET"],
+        )
+    ]
+
+
+if __name__ == "__main__":
+    public_agent_card = _build_public_agent_card()
+
+    request_handler = DefaultRequestHandler(
+        agent_executor=MockAgentExecutor(),
+        task_store=InMemoryTaskStore(),
+        agent_card=public_agent_card,
+    )
+
+    app = FastAPI(
+        title="Agora A2A Demo Server",
+        version="0.1.0",
+    )
+    add_a2a_routes_to_fastapi(
+        app,
+        agent_card_routes=_create_agent_card_routes(public_agent_card),
+        jsonrpc_routes=create_jsonrpc_routes(request_handler, "/", enable_v0_3_compat=True),
+    )
+
+    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT, log_level="info")
