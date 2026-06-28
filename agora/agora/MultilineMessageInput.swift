@@ -1,25 +1,38 @@
 import SwiftUI
 
+enum MessageInputMetrics {
+    static let lineHeight: CGFloat = 20
+    static let verticalPadding: CGFloat = 6
+}
+
 struct MultilineMessageInput: View {
     @Binding var text: String
+    @Binding var height: CGFloat
     var placeholder: String
-    var onCommandReturn: () -> Void
+    var onSubmit: () -> Void
     var canSend: Bool
 
     var body: some View {
 #if os(macOS)
         MacMessageTextView(
             text: $text,
+            height: $height,
             placeholder: placeholder,
-            onCommandReturn: onCommandReturn,
+            onSubmit: onSubmit,
             canSend: canSend
         )
+        .frame(height: height)
 #else
         TextField(placeholder, text: $text, axis: .vertical)
             .font(.body)
             .textFieldStyle(.plain)
             .multilineTextAlignment(.leading)
             .lineLimit(1...8)
+            .onKeyPress(.return) { press in
+                if press.modifiers.contains(.shift) { return .ignored }
+                if canSend { onSubmit() }
+                return .handled
+            }
 #endif
     }
 }
@@ -27,14 +40,16 @@ struct MultilineMessageInput: View {
 #if os(macOS)
 private struct MacMessageTextView: NSViewRepresentable {
     @Binding var text: String
+    @Binding var height: CGFloat
     var placeholder: String
-    var onCommandReturn: () -> Void
+    var onSubmit: () -> Void
     var canSend: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             text: $text,
-            onCommandReturn: onCommandReturn,
+            height: $height,
+            onSubmit: onSubmit,
             canSend: canSend
         )
     }
@@ -44,16 +59,20 @@ private struct MacMessageTextView: NSViewRepresentable {
         container.textView.delegate = context.coordinator
         container.textView.string = text
         container.placeholderLabel.stringValue = placeholder
-        container.onHeightChange = { height in
-            context.coordinator.updateHeight(height)
+        container.onHeightChange = { [weak coordinator = context.coordinator] newHeight in
+            coordinator?.updateHeight(newHeight)
         }
         context.coordinator.textView = container.textView
         context.coordinator.placeholderLabel = container.placeholderLabel
+        context.coordinator.containerView = container
+        DispatchQueue.main.async {
+            container.refreshHeight()
+        }
         return container
     }
 
     func updateNSView(_ container: MessageInputContainerView, context: Context) {
-        context.coordinator.onCommandReturn = onCommandReturn
+        context.coordinator.onSubmit = onSubmit
         context.coordinator.canSend = canSend
 
         if container.textView.string != text {
@@ -65,56 +84,70 @@ private struct MacMessageTextView: NSViewRepresentable {
         container.updatePlaceholderVisibility()
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         @Binding var text: String
-        var onCommandReturn: () -> Void
+        @Binding var height: CGFloat
+        var onSubmit: () -> Void
         var canSend: Bool
         weak var textView: NSTextView?
         weak var placeholderLabel: NSTextField?
+        weak var containerView: MessageInputContainerView?
 
         init(
             text: Binding<String>,
-            onCommandReturn: @escaping () -> Void,
+            height: Binding<CGFloat>,
+            onSubmit: @escaping () -> Void,
             canSend: Bool
         ) {
             _text = text
-            self.onCommandReturn = onCommandReturn
+            _height = height
+            self.onSubmit = onSubmit
             self.canSend = canSend
         }
 
-        func updateHeight(_ height: CGFloat) {
-            // Height is driven by the container's intrinsic size.
+        func updateHeight(_ newHeight: CGFloat) {
+            guard abs(height - newHeight) > 0.5 else { return }
+            height = newHeight
         }
 
         func textDidChange(_ notification: Notification) {
             guard let textView else { return }
             text = textView.string
             placeholderLabel?.isHidden = !text.isEmpty
-            (textView.enclosingScrollView?.superview as? MessageInputContainerView)?.refreshHeight()
+            scheduleHeightRefresh()
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
             let event = NSApp.currentEvent
-            if event?.modifierFlags.contains(.command) == true {
-                if canSend { onCommandReturn() }
-                return true
+            if event?.modifierFlags.contains(.shift) == true {
+                scheduleHeightRefresh()
+                return false
             }
-            return false
+            if canSend { onSubmit() }
+            return true
+        }
+
+        private func scheduleHeightRefresh() {
+            DispatchQueue.main.async { [weak containerView] in
+                containerView?.refreshHeight()
+            }
         }
     }
 }
 
+private final class PlaceholderLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 private final class MessageInputContainerView: NSView {
-    let scrollView = NSScrollView()
     let textView = NSTextView()
-    let placeholderLabel = NSTextField(labelWithString: "")
+    let placeholderLabel = PlaceholderLabel(labelWithString: "")
 
     var onHeightChange: ((CGFloat) -> Void)?
 
-    private let minHeight: CGFloat = 22
-    private let maxHeight: CGFloat = 22 * 8
-    private var cachedHeight: CGFloat = 22
+    private var cachedHeight: CGFloat = MessageInputMetrics.lineHeight
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -126,13 +159,15 @@ private final class MessageInputContainerView: NSView {
         configure()
     }
 
-    private func configure() {
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = false
-        scrollView.borderType = .noBorder
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
+    override var acceptsFirstResponder: Bool { true }
 
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(textView)
+        super.mouseDown(with: event)
+    }
+
+    private func configure() {
+        textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isEditable = true
         textView.isSelectable = true
         textView.drawsBackground = false
@@ -140,28 +175,31 @@ private final class MessageInputContainerView: NSView {
         textView.font = .systemFont(ofSize: NSFont.systemFontSize)
         textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.heightTracksTextView = false
+        textView.textContainer?.widthTracksTextView = true
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(
             width: 0,
             height: CGFloat.greatestFiniteMagnitude
         )
 
-        scrollView.documentView = textView
-
         placeholderLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
         placeholderLabel.textColor = .placeholderTextColor
+        placeholderLabel.isEditable = false
+        placeholderLabel.isSelectable = false
+        placeholderLabel.isBezeled = false
+        placeholderLabel.drawsBackground = false
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(scrollView)
+        addSubview(textView)
         addSubview(placeholderLabel)
 
         NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            textView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            textView.topAnchor.constraint(equalTo: topAnchor),
+            textView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
             placeholderLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
             placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
@@ -169,22 +207,34 @@ private final class MessageInputContainerView: NSView {
         ])
     }
 
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: cachedHeight)
-    }
-
     func refreshHeight() {
         guard bounds.width > 0 else { return }
-        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
-        let used = textView.layoutManager?.usedRect(for: textView.textContainer!).height ?? minHeight
-        let next = min(max(used, minHeight), maxHeight)
+        guard let container = textView.textContainer, let manager = textView.layoutManager else { return }
+
+        textView.textContainer?.containerSize = NSSize(
+            width: bounds.width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        manager.ensureLayout(for: container)
+
+        var layoutLineCount = 0
+        let glyphRange = manager.glyphRange(for: container)
+        manager.enumerateLineFragments(forGlyphRange: glyphRange) { _, _, _, _, _ in
+            layoutLineCount += 1
+        }
+
+        let explicitLineCount = max(1, textView.string.components(separatedBy: "\n").count)
+        let lineCount = max(max(layoutLineCount, 1), explicitLineCount)
+
+        let lineHeight = MessageInputMetrics.lineHeight
+        let next = min(CGFloat(lineCount) * lineHeight, lineHeight * 8)
+
         if abs(next - cachedHeight) > 0.5 {
             cachedHeight = next
-            invalidateIntrinsicContentSize()
-            onHeightChange?(cachedHeight)
+            onHeightChange?(next)
         }
+
         updatePlaceholderVisibility()
-        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     func updatePlaceholderVisibility() {
