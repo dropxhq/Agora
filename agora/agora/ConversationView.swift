@@ -13,6 +13,10 @@ struct ConversationView: View {
         store.vm(for: session.id)
     }
 
+    private var agentSkills: [AgentSkill] {
+        store.agentCard(for: backend.id)?.skills ?? []
+    }
+
     var body: some View {
         @Bindable var vm = store.vm(for: session.id)
 
@@ -49,6 +53,7 @@ struct ConversationView: View {
         }
         .onAppear {
             bindVM()
+            store.loadAgentCard(for: backend)
             if vm.hasSubTasks {
                 isTaskSidebarVisible = true
             }
@@ -110,7 +115,8 @@ struct ConversationView: View {
             HStack {
                 GlassInputBar(
                     text: $input,
-                    placeholder: "输入问题...",
+                    placeholder: agentSkills.isEmpty ? "输入问题..." : "输入问题，或 / 选择 Skill…",
+                    skills: agentSkills,
                     isSendDisabled: vm.isStreaming,
                     onSubmit: { submit(vm: vm) }
                 )
@@ -144,11 +150,12 @@ struct ConversationView: View {
 
     private func submit(vm: ConversationVM) {
         guard !input.isEmpty else { return }
-        let text = input
+        let text = SkillSlashCommand.resolveOutgoingMessage(from: input, skills: agentSkills)
         input = ""
 
         if session.title == "新会话" {
-            let title = text.count > 24 ? String(text.prefix(24)) + "…" : text
+            let titleSource = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = titleSource.count > 24 ? String(titleSource.prefix(24)) + "…" : titleSource
             store.renameSession(session, title: title)
         }
 
@@ -243,6 +250,7 @@ struct TurnView: View {
                         RoundView(round: task.rounds[i], index: i + 1)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 4)
             } label: {
                 Label(
@@ -259,6 +267,7 @@ struct TurnView: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -320,6 +329,7 @@ struct RoundView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
     }

@@ -11,6 +11,10 @@ struct MultilineMessageInput: View {
     var placeholder: String
     var onSubmit: () -> Void
     var canSend: Bool
+    var autocompleteActive: Bool = false
+    var onAutocompleteNavigate: ((Int) -> Void)? = nil
+    var onAutocompleteAccept: (() -> Void)? = nil
+    var onAutocompleteDismiss: (() -> Void)? = nil
 
     var body: some View {
 #if os(macOS)
@@ -19,7 +23,11 @@ struct MultilineMessageInput: View {
             height: $height,
             placeholder: placeholder,
             onSubmit: onSubmit,
-            canSend: canSend
+            canSend: canSend,
+            autocompleteActive: autocompleteActive,
+            onAutocompleteNavigate: onAutocompleteNavigate,
+            onAutocompleteAccept: onAutocompleteAccept,
+            onAutocompleteDismiss: onAutocompleteDismiss
         )
         .frame(height: height)
 #else
@@ -30,7 +38,31 @@ struct MultilineMessageInput: View {
             .lineLimit(1...8)
             .onKeyPress(.return) { press in
                 if press.modifiers.contains(.shift) { return .ignored }
+                if autocompleteActive {
+                    onAutocompleteAccept?()
+                    return .handled
+                }
                 if canSend { onSubmit() }
+                return .handled
+            }
+            .onKeyPress(.upArrow) {
+                guard autocompleteActive else { return .ignored }
+                onAutocompleteNavigate?(-1)
+                return .handled
+            }
+            .onKeyPress(.downArrow) {
+                guard autocompleteActive else { return .ignored }
+                onAutocompleteNavigate?(1)
+                return .handled
+            }
+            .onKeyPress(.escape) {
+                guard autocompleteActive else { return .ignored }
+                onAutocompleteDismiss?()
+                return .handled
+            }
+            .onKeyPress(.tab) {
+                guard autocompleteActive else { return .ignored }
+                onAutocompleteAccept?()
                 return .handled
             }
 #endif
@@ -44,6 +76,10 @@ private struct MacMessageTextView: NSViewRepresentable {
     var placeholder: String
     var onSubmit: () -> Void
     var canSend: Bool
+    var autocompleteActive: Bool
+    var onAutocompleteNavigate: ((Int) -> Void)?
+    var onAutocompleteAccept: (() -> Void)?
+    var onAutocompleteDismiss: (() -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -74,6 +110,10 @@ private struct MacMessageTextView: NSViewRepresentable {
     func updateNSView(_ container: MessageInputContainerView, context: Context) {
         context.coordinator.onSubmit = onSubmit
         context.coordinator.canSend = canSend
+        context.coordinator.autocompleteActive = autocompleteActive
+        context.coordinator.onAutocompleteNavigate = onAutocompleteNavigate
+        context.coordinator.onAutocompleteAccept = onAutocompleteAccept
+        context.coordinator.onAutocompleteDismiss = onAutocompleteDismiss
 
         if container.textView.string != text {
             container.textView.string = text
@@ -90,6 +130,10 @@ private struct MacMessageTextView: NSViewRepresentable {
         @Binding var height: CGFloat
         var onSubmit: () -> Void
         var canSend: Bool
+        var autocompleteActive = false
+        var onAutocompleteNavigate: ((Int) -> Void)?
+        var onAutocompleteAccept: (() -> Void)?
+        var onAutocompleteDismiss: (() -> Void)?
         weak var textView: NSTextView?
         weak var placeholderLabel: NSTextField?
         weak var containerView: MessageInputContainerView?
@@ -119,11 +163,34 @@ private struct MacMessageTextView: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if autocompleteActive {
+                switch commandSelector {
+                case #selector(NSStandardKeyBindingResponding.moveUp(_:)):
+                    onAutocompleteNavigate?(-1)
+                    return true
+                case #selector(NSStandardKeyBindingResponding.moveDown(_:)):
+                    onAutocompleteNavigate?(1)
+                    return true
+                case #selector(NSStandardKeyBindingResponding.insertTab(_:)):
+                    onAutocompleteAccept?()
+                    return true
+                case #selector(NSResponder.cancelOperation(_:)):
+                    onAutocompleteDismiss?()
+                    return true
+                default:
+                    break
+                }
+            }
+
             guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
             let event = NSApp.currentEvent
             if event?.modifierFlags.contains(.shift) == true {
                 scheduleHeightRefresh()
                 return false
+            }
+            if autocompleteActive {
+                onAutocompleteAccept?()
+                return true
             }
             if canSend { onSubmit() }
             return true

@@ -114,10 +114,17 @@ class WorkspaceStore {
     }
 
     func deleteSession(_ session: Session) {
-        sessions.removeAll { $0.id == session.id }
-        vms.removeValue(forKey: session.id)
-        snapshots.removeValue(forKey: session.id)
-        if selectedSessionId == session.id {
+        deleteSessions(ids: [session.id])
+    }
+
+    func deleteSessions(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        sessions.removeAll { ids.contains($0.id) }
+        for id in ids {
+            vms.removeValue(forKey: id)
+            snapshots.removeValue(forKey: id)
+        }
+        if let selected = selectedSessionId, ids.contains(selected) {
             selectedSessionId = sessions.first?.id
         }
         save()
