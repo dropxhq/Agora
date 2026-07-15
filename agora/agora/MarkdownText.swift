@@ -4,7 +4,7 @@ struct MarkdownText: View {
     let content: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
                 sectionView(section)
             }
@@ -21,24 +21,20 @@ struct MarkdownText: View {
     private func sectionView(_ section: MarkdownSection) -> some View {
         switch section {
         case .spacer:
-            Color.clear.frame(height: 8)
-        case .block(let markdown):
+            Color.clear.frame(height: 4)
+        case .markdown(let markdown):
             if let attributed = try? AttributedString(
                 markdown: markdown,
-                options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
+                options: AttributedString.MarkdownParsingOptions(
+                    interpretedSyntax: .full,
+                    failurePolicy: .returnPartiallyParsedIfPossible
+                )
             ) {
                 Text(attributed)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Text(markdown)
-            }
-        case .line(let line):
-            if let attributed = try? AttributedString(
-                markdown: line,
-                options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            ) {
-                Text(attributed)
-            } else {
-                Text(line)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -46,24 +42,37 @@ struct MarkdownText: View {
 
 private enum MarkdownSection {
     case spacer
-    case line(String)
-    case block(String)
+    case markdown(String)
 }
 
+/// Splits content so tables stay isolated, while headings / lists / paragraphs
+/// are rendered together with full Markdown block syntax.
 private enum MarkdownSectionParser {
     static func parse(_ content: String) -> [MarkdownSection] {
         let lines = normalize(content).components(separatedBy: "\n")
         var sections: [MarkdownSection] = []
+        var proseBuffer: [String] = []
         var tableBuffer: [String] = []
 
+        func flushProse() {
+            let joined = proseBuffer.joined(separator: "\n")
+                .trimmingCharacters(in: .newlines)
+            proseBuffer = []
+            guard !joined.isEmpty else { return }
+            sections.append(.markdown(joined))
+        }
+
         func flushTable() {
-            guard !tableBuffer.isEmpty else { return }
-            sections.append(.block(tableBuffer.joined(separator: "\n")))
+            let joined = tableBuffer.joined(separator: "\n")
+                .trimmingCharacters(in: .newlines)
             tableBuffer = []
+            guard !joined.isEmpty else { return }
+            sections.append(.markdown(joined))
         }
 
         for line in lines {
             if isTableLine(line) {
+                flushProse()
                 tableBuffer.append(line)
                 continue
             }
@@ -71,15 +80,17 @@ private enum MarkdownSectionParser {
             flushTable()
 
             if line.trimmingCharacters(in: .whitespaces).isEmpty {
-                if sections.last != .spacer {
+                if !proseBuffer.isEmpty {
+                    flushProse()
                     sections.append(.spacer)
                 }
             } else {
-                sections.append(.line(line))
+                proseBuffer.append(line)
             }
         }
 
         flushTable()
+        flushProse()
         return sections
     }
 
@@ -97,13 +108,31 @@ private enum MarkdownSectionParser {
             let token = String(marker.dropFirst(2))
             text = text.replacingOccurrences(of: token, with: marker)
         }
+
+        // Ensure ATX headings start on their own line when jammed mid-string.
+        text = text.replacingOccurrences(
+            of: #"([^\n])(#{1,6}\s+)"#,
+            with: "$1\n$2",
+            options: .regularExpression
+        )
+
+        // Keep list items on their own lines when streamed inline.
         text = text.replacingOccurrences(of: " - ", with: "\n- ")
+        text = text.replacingOccurrences(of: "\n|", with: "\n|")
+
         return text.trimmingCharacters(in: .newlines)
     }
 
     static func isTableLine(_ line: String) -> Bool {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard trimmed.contains("|") else { return false }
+        // Separator row: | --- | --- |
+        let stripped = trimmed
+            .replacingOccurrences(of: "|", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
+        if stripped.isEmpty { return true }
         return trimmed.filter { $0 == "|" }.count >= 2
     }
 }
@@ -113,9 +142,7 @@ extension MarkdownSection: Equatable {
         switch (lhs, rhs) {
         case (.spacer, .spacer):
             return true
-        case (.line(let a), .line(let b)):
-            return a == b
-        case (.block(let a), .block(let b)):
+        case (.markdown(let a), .markdown(let b)):
             return a == b
         default:
             return false
