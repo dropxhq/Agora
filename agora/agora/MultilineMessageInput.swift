@@ -3,6 +3,8 @@ import SwiftUI
 enum MessageInputMetrics {
     static let lineHeight: CGFloat = 20
     static let verticalPadding: CGFloat = 6
+    /// 多行输入框默认至少约两行高度
+    static let minTextHeight: CGFloat = lineHeight * 2
 }
 
 struct MultilineMessageInput: View {
@@ -294,7 +296,10 @@ private final class MessageInputContainerView: NSView {
         let lineCount = max(max(layoutLineCount, 1), explicitLineCount)
 
         let lineHeight = MessageInputMetrics.lineHeight
-        let next = min(CGFloat(lineCount) * lineHeight, lineHeight * 8)
+        let next = min(
+            max(CGFloat(lineCount) * lineHeight, MessageInputMetrics.minTextHeight),
+            lineHeight * 8
+        )
 
         if abs(next - cachedHeight) > 0.5 {
             cachedHeight = next
