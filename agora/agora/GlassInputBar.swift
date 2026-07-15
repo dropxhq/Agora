@@ -8,6 +8,7 @@ struct GlassInputBar: View {
     var isSendDisabled: Bool = false
     var onSubmit: () -> Void
     var onStop: () -> Void = {}
+    var onNewSession: () -> Void = {}
 
     @State private var inputHeight: CGFloat = MessageInputMetrics.lineHeight
     @State private var selectedIndex = 0
@@ -24,8 +25,15 @@ struct GlassInputBar: View {
         static var singleLineHeight: CGFloat { buttonSize + sideInset * 2 }
     }
 
+    private var menuSkills: [AgentSkill] {
+        SkillSlashCommand.menuSkills(agentSkills: skills)
+    }
+
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSendDisabled
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if SkillSlashCommand.isNewSessionCommand(trimmed) { return true }
+        return !isSendDisabled
     }
 
     private var actionEnabled: Bool {
@@ -53,10 +61,10 @@ struct GlassInputBar: View {
 
     private var listSkills: [AgentSkill] {
         if forceShowSkills {
-            return skills
+            return menuSkills
         }
         guard let activeQuery else { return [] }
-        return SkillSlashCommand.filteredSkills(skills, query: activeQuery.query)
+        return SkillSlashCommand.filteredSkills(menuSkills, query: activeQuery.query)
     }
 
     private var isAutocompleteVisible: Bool {
@@ -106,11 +114,11 @@ struct GlassInputBar: View {
         HStack(alignment: .center, spacing: 8) {
             plusButton
             messageInput(alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: BarMetrics.buttonSize, alignment: .center)
             sendButton
         }
         .padding(BarMetrics.sideInset)
-        .frame(minHeight: BarMetrics.singleLineHeight)
+        .frame(height: BarMetrics.singleLineHeight)
         .glassEffect(.regular.interactive(), in: singleLineShape)
     }
 
@@ -131,25 +139,22 @@ struct GlassInputBar: View {
         .glassEffect(.regular.interactive(), in: multilineShape)
     }
 
-    @ViewBuilder
     private var plusButton: some View {
-        if !skills.isEmpty {
-            Button {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    forceShowSkills.toggle()
-                    dismissAutocomplete = false
-                    selectedIndex = 0
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .frame(width: BarMetrics.buttonSize, height: BarMetrics.buttonSize)
-                    .background(Circle().fill(Color.secondary.opacity(0.12)))
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                forceShowSkills.toggle()
+                dismissAutocomplete = false
+                selectedIndex = 0
             }
-            .buttonStyle(.plain)
-            .help("选择 Skill")
+        } label: {
+            Image(systemName: "plus")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.primary)
+                .frame(width: BarMetrics.buttonSize, height: BarMetrics.buttonSize)
+                .background(Circle().fill(Color.secondary.opacity(0.12)))
         }
+        .buttonStyle(.plain)
+        .help("选择 Skill")
     }
 
     private var sendButton: some View {
@@ -214,6 +219,13 @@ struct GlassInputBar: View {
     }
 
     private func acceptSelection(_ skill: AgentSkill) {
+        if skill.id == SkillSlashCommand.newSessionSkillID {
+            text = ""
+            dismissSkillList()
+            selectedIndex = 0
+            onNewSession()
+            return
+        }
         text = SkillSlashCommand.applySelection(skill, to: text)
         dismissSkillList()
         selectedIndex = 0

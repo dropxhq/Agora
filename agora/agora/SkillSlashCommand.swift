@@ -1,6 +1,14 @@
 import Foundation
 
 enum SkillSlashCommand {
+    static let newSessionSkillID = "new"
+
+    static let newSessionSkill = AgentSkill(
+        id: newSessionSkillID,
+        name: "新建会话",
+        description: "创建新的对话会话"
+    )
+
     struct OutgoingMessage: Equatable {
         let text: String
         let skill: AgentSkill?
@@ -9,6 +17,18 @@ enum SkillSlashCommand {
 
     struct ActiveQuery: Equatable {
         let query: String
+    }
+
+    /// Built-in `/new` plus agent skills, used by `/` autocomplete and the `+` menu.
+    static func menuSkills(agentSkills: [AgentSkill]) -> [AgentSkill] {
+        [newSessionSkill] + agentSkills
+    }
+
+    static func isNewSessionCommand(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed == "/\(newSessionSkillID)"
+            || trimmed.hasPrefix("/\(newSessionSkillID) ")
+            || trimmed == newSessionSkillID
     }
 
     /// Returns the filter query when the input is an in-progress slash command (`/…` with no space yet).
@@ -30,6 +50,9 @@ enum SkillSlashCommand {
     }
 
     static func applySelection(_ skill: AgentSkill, to text: String) -> String {
+        if skill.id == newSessionSkillID {
+            return "/\(newSessionSkillID)"
+        }
         let example = skill.examples?.first
         if let example, !example.isEmpty {
             return "/\(skill.id) \(example)"
@@ -60,6 +83,7 @@ enum SkillSlashCommand {
         let body = String(text.dropFirst())
         guard let spaceIndex = body.firstIndex(where: { $0.isWhitespace }) else {
             if let skill = matchingSkill(forToken: body, in: skills) {
+                if skill.id == newSessionSkillID { return text }
                 if let example = skill.examples?.first, !example.isEmpty { return example }
                 return skill.description
             }
@@ -70,6 +94,7 @@ enum SkillSlashCommand {
         let rest = String(body[body.index(after: spaceIndex)...])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let skill = matchingSkill(forToken: token, in: skills) else { return text }
+        if skill.id == newSessionSkillID { return text }
         if !rest.isEmpty { return rest }
         if let example = skill.examples?.first, !example.isEmpty { return example }
         return skill.description

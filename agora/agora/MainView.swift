@@ -74,6 +74,8 @@ struct SidebarView: View {
                             Label("新建会话", systemImage: "plus.message")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }

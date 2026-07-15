@@ -120,19 +120,10 @@ struct ConversationView: View {
                     isStreaming: vm.isStreaming,
                     isSendDisabled: store.agentCard(for: backend.id) == nil,
                     onSubmit: { submit(vm: vm) },
-                    onStop: { vm.stop() }
+                    onStop: { vm.stop() },
+                    onNewSession: { store.addSession(to: backend.id) }
                 )
             }
-
-            Button {
-                store.addSession(to: backend.id)
-            } label: {
-                Label("新建会话", systemImage: "plus.message")
-                    .font(.callout)
-            }
-            .buttonStyle(.borderless)
-            .padding(.horizontal)
-            .padding(.vertical, 8)
         }
     }
 
@@ -154,6 +145,13 @@ struct ConversationView: View {
 
     private func submit(vm: ConversationVM) {
         guard !input.isEmpty else { return }
+
+        if SkillSlashCommand.isNewSessionCommand(input) {
+            input = ""
+            store.addSession(to: backend.id)
+            return
+        }
+
         let outgoing = SkillSlashCommand.prepareOutgoing(from: input, skills: agentSkills)
         input = ""
 

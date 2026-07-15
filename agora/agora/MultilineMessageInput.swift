@@ -31,7 +31,8 @@ struct MultilineMessageInput: View {
             onAutocompleteAccept: onAutocompleteAccept,
             onAutocompleteDismiss: onAutocompleteDismiss
         )
-        .frame(height: height)
+        .frame(minHeight: height)
+        .frame(maxHeight: .infinity)
 #else
         TextField(placeholder, text: $text, axis: .vertical)
             .font(.body)
@@ -272,7 +273,7 @@ private final class MessageInputContainerView: NSView {
 
             placeholderLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
             placeholderLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            placeholderLabel.topAnchor.constraint(equalTo: topAnchor),
+            placeholderLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
@@ -303,7 +304,24 @@ private final class MessageInputContainerView: NSView {
             onHeightChange?(next)
         }
 
+        updateVerticalTextInset()
         updatePlaceholderVisibility()
+    }
+
+    /// 单行时在可用高度内垂直居中文字与占位符，多行时顶对齐。
+    private func updateVerticalTextInset() {
+        guard let container = textView.textContainer, let manager = textView.layoutManager else { return }
+        manager.ensureLayout(for: container)
+        let usedHeight = max(manager.usedRect(for: container).height, 1)
+        let hasNewline = textView.string.contains(where: \.isNewline)
+        let isSingleVisualLine = !hasNewline && usedHeight <= MessageInputMetrics.lineHeight * 1.4
+
+        if isSingleVisualLine, bounds.height > usedHeight + 1 {
+            let inset = max(0, (bounds.height - usedHeight) / 2)
+            textView.textContainerInset = NSSize(width: 0, height: inset)
+        } else {
+            textView.textContainerInset = .zero
+        }
     }
 
     func updatePlaceholderVisibility() {
