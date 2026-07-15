@@ -74,41 +74,41 @@ struct ConversationView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        if let mainTask = vm.mainTask {
-                            MainTaskHeader(task: mainTask, subTaskCount: vm.subTasks.count)
-                        }
-
-                        if let errorMessage = vm.errorMessage {
+                        if let errorMessage = vm.errorMessage, vm.rootTasks.isEmpty {
                             ConnectionErrorBanner(message: errorMessage, onOpenSettings: onEditBackend)
                         }
 
-                        if vm.mainTask == nil && vm.tasks.isEmpty {
+                        if vm.rootTasks.isEmpty {
                             AgentCardEmptyStateView(
                                 backend: backend,
                                 store: store,
                                 onEditBackend: onEditBackend
                             )
                             .frame(maxWidth: .infinity, minHeight: 240)
-                        } else if vm.hasSubTasks {
-                            if let subTask = vm.displayTask {
-                                SubTaskSection(task: subTask)
-                                    .id("subtask-\(subTask.id)")
+                        } else {
+                            ForEach(vm.rootTasks, id: \.id) { rootTask in
+                                TaskConversationBlock(
+                                    rootTask: rootTask,
+                                    subTasks: vm.subTasks(for: rootTask.id),
+                                    errorMessage: rootTask.id == vm.mainTask?.id ? vm.errorMessage : nil,
+                                    onOpenSettings: onEditBackend
+                                )
                             }
-                        } else if let task = vm.mainTask {
-                            TurnView(task: task)
-                                .id("turn-\(task.id)")
                         }
                     }
                     .padding()
                 }
+                .onChange(of: vm.rootTasks.count) { _, _ in
+                    scrollToLatest(proxy: proxy, vm: vm)
+                }
                 .onChange(of: vm.rounds.count) { _, _ in
-                    scrollToCurrentTurn(proxy: proxy, vm: vm)
+                    scrollToLatest(proxy: proxy, vm: vm)
                 }
                 .onChange(of: vm.selectedSubTaskId) { _, _ in
-                    scrollToCurrentTurn(proxy: proxy, vm: vm)
+                    scrollToLatest(proxy: proxy, vm: vm)
                 }
                 .onChange(of: vm.summary) { _, _ in
-                    scrollToCurrentTurn(proxy: proxy, vm: vm)
+                    scrollToLatest(proxy: proxy, vm: vm)
                 }
             }
 
@@ -117,7 +117,7 @@ struct ConversationView: View {
                     text: $input,
                     placeholder: agentSkills.isEmpty ? "输入问题..." : "输入问题，或 / 选择 Skill…",
                     skills: agentSkills,
-                    isSendDisabled: vm.isStreaming,
+                    isSendDisabled: vm.isStreaming || store.agentCard(for: backend.id) == nil,
                     onSubmit: { submit(vm: vm) }
                 )
             }
@@ -134,11 +134,13 @@ struct ConversationView: View {
         }
     }
 
-    private func scrollToCurrentTurn(proxy: ScrollViewProxy, vm: ConversationVM) {
-        if vm.hasSubTasks, let id = vm.displayTask?.id {
-            proxy.scrollTo("subtask-\(id)", anchor: .bottom)
-        } else if let id = vm.mainTask?.id {
-            proxy.scrollTo("turn-\(id)", anchor: .bottom)
+    private func scrollToLatest(proxy: ScrollViewProxy, vm: ConversationVM) {
+        guard let rootTask = vm.mainTask else { return }
+        let subs = vm.subTasks(for: rootTask.id)
+        if let subTask = subs.last {
+            proxy.scrollTo("subtask-\(subTask.id)", anchor: .bottom)
+        } else {
+            proxy.scrollTo("turn-\(rootTask.id)", anchor: .bottom)
         }
     }
 
@@ -150,17 +152,48 @@ struct ConversationView: View {
 
     private func submit(vm: ConversationVM) {
         guard !input.isEmpty else { return }
-        let text = SkillSlashCommand.resolveOutgoingMessage(from: input, skills: agentSkills)
+        let outgoing = SkillSlashCommand.prepareOutgoing(from: input, skills: agentSkills)
         input = ""
 
         if session.title == "新会话" {
-            let titleSource = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let titleSource = outgoing.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let title = titleSource.count > 24 ? String(titleSource.prefix(24)) + "…" : titleSource
             store.renameSession(session, title: title)
         }
 
-        let url = URL(string: backend.serverURL) ?? URL(string: "http://localhost:8000")!
-        vm.send(text: text, client: A2AClient(baseURL: url), contextId: session.contextId)
+        vm.send(
+            text: outgoing.text,
+            client: store.a2aClient(for: backend),
+            contextId: session.contextId,
+            skill: outgoing.skill
+        )
+    }
+}
+
+struct TaskConversationBlock: View {
+    let rootTask: AITask
+    let subTasks: [AITask]
+    let errorMessage: String?
+    var onOpenSettings: () -> Void = {}
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MainTaskHeader(task: rootTask, subTaskCount: subTasks.count)
+
+            if let errorMessage {
+                ConnectionErrorBanner(message: errorMessage, onOpenSettings: onOpenSettings)
+            }
+
+            if subTasks.isEmpty {
+                TurnView(task: rootTask)
+                    .id("turn-\(rootTask.id)")
+            } else {
+                ForEach(subTasks) { subTask in
+                    SubTaskSection(task: subTask)
+                        .id("subtask-\(subTask.id)")
+                }
+            }
+        }
     }
 }
 
@@ -190,6 +223,24 @@ struct MainTaskHeader: View {
             Text(task.prompt)
                 .font(.body)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let skillId = task.skillId {
+                HStack(spacing: 6) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.caption2)
+                    Text("/\(skillId)")
+                        .font(.caption.monospaced())
+                    if let skillName = task.skillName {
+                        Text(skillName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .foregroundStyle(.purple)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.purple.opacity(0.1), in: Capsule())
+            }
         }
         .padding(12)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
@@ -261,7 +312,7 @@ struct TurnView: View {
             }
 
             if let summary = task.summary {
-                Text(summary)
+                MarkdownText(content: summary)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
@@ -302,15 +353,28 @@ struct RoundView: View {
             Text("Round \(index)").font(.caption).foregroundStyle(.tertiary)
 
             if let r = round.reasoning {
-                Label(r, systemImage: "bubble.left.fill")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "bubble.left.fill")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                    MarkdownText(content: r)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             ForEach(round.toolCalls) { tc in
-                Label("\(tc.name)(\(tc.argsPreview))", systemImage: "wrench.fill")
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.blue)
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tc.name)
+                            .font(.callout.weight(.medium))
+                    }
+                } icon: {
+                    Image(systemName: "wrench.fill")
+                }
+                .font(.callout)
+                .foregroundStyle(.blue)
             }
 
             if !round.toolResults.isEmpty {

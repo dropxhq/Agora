@@ -30,15 +30,12 @@ struct MainView: View {
             }
         }
         .sheet(isPresented: $showAddBackend) {
-            BackendEditorSheet(mode: .add) { name, url in
-                store.addBackend(name: name, serverURL: url)
+            BackendEditorSheet(mode: .add) { backend in
+                store.addBackend(backend)
             }
         }
         .sheet(item: $editingBackend) { backend in
-            BackendEditorSheet(mode: .edit(backend)) { name, url in
-                var updated = backend
-                updated.name = name
-                updated.serverURL = url
+            BackendEditorSheet(mode: .edit(backend)) { updated in
                 store.updateBackend(updated)
             }
         }
@@ -269,26 +266,65 @@ private struct BackendEditorSheet: View {
     }
 
     let mode: Mode
-    let onSave: (String, String) -> Void
+    let onSave: (Backend) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var backendID = UUID()
     @State private var name = ""
     @State private var serverURL = "http://localhost:8000"
+    @State private var headerEntries: [KeyValueEntry] = []
+    @State private var metadataEntries: [KeyValueEntry] = []
+    @State private var configTab: BackendConfigTab = .headers
+
+    private enum BackendConfigTab: String, CaseIterable, Identifiable {
+        case headers = "Headers"
+        case metadata = "Metadata"
+
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Backend") {
-                    TextField("名称", text: $name)
-                    TextField("Server URL", text: $serverURL)
-                        .textContentType(.URL)
+            VStack(alignment: .leading, spacing: 0) {
+                Form {
+                    Section("Backend") {
+                        TextField("名称", text: $name)
+                        TextField("Server URL", text: $serverURL)
+                            .textContentType(.URL)
 #if os(iOS)
-                        .keyboardType(.URL)
-                        .autocapitalization(.none)
+                            .keyboardType(.URL)
+                            .autocapitalization(.none)
 #endif
+                    }
+                }
+                .formStyle(.grouped)
+                .frame(maxHeight: 130)
+
+                Divider()
+
+                Picker("", selection: $configTab) {
+                    ForEach(BackendConfigTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+                ScrollView {
+                    Group {
+                        switch configTab {
+                        case .headers:
+                            KeyValueTableEditor(entries: $headerEntries, mode: .headers)
+                        case .metadata:
+                            KeyValueTableEditor(entries: $metadataEntries, mode: .metadata)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
                 }
             }
-            .formStyle(.grouped)
             .navigationTitle(modeTitle)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -296,8 +332,7 @@ private struct BackendEditorSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        onSave(name.trimmingCharacters(in: .whitespacesAndNewlines),
-                               serverURL.trimmingCharacters(in: .whitespacesAndNewlines))
+                        onSave(buildBackend())
                         dismiss()
                     }
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -307,16 +342,35 @@ private struct BackendEditorSheet: View {
             .onAppear {
                 switch mode {
                 case .add:
+                    backendID = UUID()
                     name = "Backend \(Int.random(in: 1...99))"
+                    serverURL = "http://localhost:8000"
+                    headerEntries = []
+                    metadataEntries = []
+                    configTab = .headers
                 case .edit(let backend):
+                    backendID = backend.id
                     name = backend.name
                     serverURL = backend.serverURL
+                    headerEntries = BackendConfigParser.headerEntries(from: backend.requestHeaders)
+                    metadataEntries = BackendConfigParser.metadataEntries(from: backend.messageMetadata)
+                    configTab = .headers
                 }
             }
         }
 #if os(macOS)
-        .frame(width: 420, height: 180)
+        .frame(width: 680, height: 560)
 #endif
+    }
+
+    private func buildBackend() -> Backend {
+        Backend(
+            id: backendID,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            serverURL: serverURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            requestHeaders: BackendConfigParser.serializeHeaders(headerEntries),
+            messageMetadata: BackendConfigParser.serializeMetadata(metadataEntries)
+        )
     }
 
     private var modeTitle: String {

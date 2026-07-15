@@ -1,0 +1,3 @@
+[bindings.swift]
+module_name = "AgoraA2A"
+ffi_module_name = "AgoraA2AFFI"

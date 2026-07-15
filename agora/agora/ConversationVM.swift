@@ -11,6 +11,8 @@ class ConversationVM {
     private var pendingPrompt: String?
     private var streamingTaskId: String?
     private var orchestratesSubTasks = false
+    private var multiTaskServerId: String?
+    private var currentSubTaskId: String?
     private let decoder = JSONDecoder()
 
     var onChange: (() -> Void)?
@@ -28,8 +30,12 @@ class ConversationVM {
 
     var subTasks: [AITask] {
         guard let main = mainTask else { return [] }
-        return tasks
-            .filter { $0.parentTaskId == main.id }
+        return subTasks(for: main.id)
+    }
+
+    func subTasks(for mainId: String) -> [AITask] {
+        tasks
+            .filter { $0.parentTaskId == mainId }
             .sorted { ($0.subtaskIndex ?? Int.max) < ($1.subtaskIndex ?? Int.max) }
     }
 
@@ -70,15 +76,23 @@ class ConversationVM {
         notifyChange()
     }
 
-    func send(text: String, client: A2AClient, contextId: String) {
+    func send(text: String, client: A2AClient, contextId: String, skill: AgentSkill? = nil) {
         let placeholderId = "main-\(UUID().uuidString)"
-        let task = AITask(id: placeholderId, prompt: text, state: .working)
+        let task = AITask(
+            id: placeholderId,
+            prompt: text,
+            state: .working,
+            skillId: skill?.id,
+            skillName: skill?.name
+        )
         tasks.append(task)
         activeMainTaskId = placeholderId
         selectedSubTaskId = nil
         selectedTaskId = placeholderId
         streamingTaskId = placeholderId
         orchestratesSubTasks = Self.isMultiTaskPrompt(text)
+        multiTaskServerId = nil
+        currentSubTaskId = nil
         pendingPrompt = text
         notifyChange()
 
@@ -88,8 +102,11 @@ class ConversationVM {
                 for try await data in stream {
                     apply(data)
                 }
+                finalizeStreamingTaskIfNeeded()
                 pendingPrompt = nil
                 orchestratesSubTasks = false
+                multiTaskServerId = nil
+                currentSubTaskId = nil
             } catch {
                 handleStreamError(error, serverURL: client.baseURL)
             }
@@ -104,6 +121,8 @@ class ConversationVM {
                     prompt: task.prompt,
                     parentTaskId: task.parentTaskId,
                     subtaskIndex: task.subtaskIndex,
+                    skillId: task.skillId,
+                    skillName: task.skillName,
                     rounds: task.rounds.map { round in
                         PersistedRound(
                             reasoning: round.reasoning,
@@ -172,6 +191,8 @@ class ConversationVM {
             parentTaskId: persisted.parentTaskId,
             subtaskIndex: persisted.subtaskIndex,
             state: TaskState.from(label: persisted.state),
+            skillId: persisted.skillId,
+            skillName: persisted.skillName,
             createdAt: persisted.createdAt
         )
         task.rounds = persisted.rounds.map { persistedRound in
@@ -197,7 +218,17 @@ class ConversationVM {
 
     @MainActor
     private func handleStreamError(_ error: Error, serverURL: URL) {
-        let message = ConnectionErrorMessage.message(for: error, serverURL: serverURL)
+        let message: String
+        if let serverError = error as? ServerResponseError {
+            message = serverError.message
+        } else {
+            message = ConnectionErrorMessage.message(for: error, serverURL: serverURL)
+        }
+        markStreamingTaskFailed(message: message)
+    }
+
+    @MainActor
+    private func markStreamingTaskFailed(message: String) {
         if let taskId = streamingTaskId, let task = tasks.first(where: { $0.id == taskId }) {
             task.errorMessage = message
             task.state = .failed
@@ -212,17 +243,50 @@ class ConversationVM {
         pendingPrompt = nil
         streamingTaskId = nil
         orchestratesSubTasks = false
+        multiTaskServerId = nil
+        currentSubTaskId = nil
+        notifyChange()
+    }
+
+    @MainActor
+    private func finalizeStreamingTaskIfNeeded() {
+        guard let taskId = streamingTaskId ?? activeMainTaskId,
+              let task = tasks.first(where: { $0.id == taskId }),
+              task.state == .working else {
+            return
+        }
+        promoteSummaryFromStreamBuffer(for: task)
+        if task.summary != nil {
+            task.state = .completed
+        } else {
+            task.state = .failed
+            task.errorMessage = task.errorMessage ?? "服务器未返回有效响应。"
+        }
+        refreshMainTaskState(for: task.parentTaskId ?? task.id)
+        streamingTaskId = nil
         notifyChange()
     }
 
     @MainActor
     private func apply(_ json: String) {
+        if let serverError = ServerErrorMessage.parse(from: json) {
+            markStreamingTaskFailed(message: serverError)
+            return
+        }
+
         guard let data = json.data(using: .utf8) else { return }
         let payload = Self.streamPayloadData(from: data)
 
+        if let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+           let kind = object["kind"] as? String {
+            applyStreamKindEvent(object, kind: kind)
+            return
+        }
+
         if let t = try? decoder.decode(A2ATask.self, from: payload) {
             if orchestratesSubTasks {
-                registerSubTask(t.id)
+                multiTaskServerId = t.id
+                _ = ensureCurrentSubTask()
             } else {
                 adoptServerTaskId(t.id)
                 if tasks.first(where: { $0.id == t.id }) == nil {
@@ -244,6 +308,9 @@ class ConversationVM {
                 }
             }
             updateTaskState(e.taskId, state: e.status.state)
+            if e.status.state.lowercased() == "task_state_failed" || e.status.state.lowercased() == "failed" {
+                task.errorMessage = ServerErrorMessage.parse(from: payload) ?? task.errorMessage
+            }
             notifyChange()
             return
         }
@@ -254,6 +321,9 @@ class ConversationVM {
             task.summaryBuffer += text
             if e.lastChunk == true {
                 task.summary = task.summaryBuffer
+                if orchestratesSubTasks, task.isSubTask {
+                    task.state = .completed
+                }
             }
             notifyChange()
         }
@@ -269,27 +339,65 @@ class ConversationVM {
         streamingTaskId = serverId
     }
 
-    private func registerSubTask(_ serverId: String) {
-        guard let mainId = activeMainTaskId else { return }
-        guard tasks.first(where: { $0.id == serverId }) == nil else { return }
+    private func ensureCurrentSubTask(prompt: String? = nil) -> AITask {
+        if let currentId = currentSubTaskId,
+           let task = tasks.first(where: { $0.id == currentId }) {
+            streamingTaskId = currentId
+            return task
+        }
+        return beginNextSubTask(prompt: prompt ?? "子任务 \(subTasks.count + 1)")
+    }
+
+    private func beginNextSubTask(prompt: String) -> AITask {
+        guard let mainId = activeMainTaskId else {
+            let fallback = AITask(id: UUID().uuidString, prompt: prompt, state: .working)
+            tasks.append(fallback)
+            return fallback
+        }
 
         let index = subTasks.count + 1
+        let subId = "\(mainId)-sub-\(index)"
         let sub = AITask(
-            id: serverId,
-            prompt: "子任务 \(index)",
+            id: subId,
+            prompt: prompt,
             parentTaskId: mainId,
             subtaskIndex: index,
             state: .working
         )
         tasks.append(sub)
-        streamingTaskId = serverId
-        selectedSubTaskId = serverId
+        currentSubTaskId = subId
+        streamingTaskId = subId
+        selectedSubTaskId = subId
         notifyChange()
+        return sub
     }
 
     private func updateTaskState(_ taskId: String, state: String) {
+        if orchestratesSubTasks, taskId == multiTaskServerId {
+            if state.lowercased() == "failed" || state.lowercased() == "task_state_failed" {
+                for sub in subTasks { sub.state = .failed }
+                if let mainId = activeMainTaskId,
+                   let main = tasks.first(where: { $0.id == mainId }) {
+                    main.state = .failed
+                }
+            } else if TaskState.isTerminal(state) {
+                for sub in subTasks where sub.state == .working {
+                    sub.state = .completed
+                }
+                if let mainId = activeMainTaskId,
+                   let main = tasks.first(where: { $0.id == mainId }) {
+                    main.state = .completed
+                }
+            } else if let mainId = activeMainTaskId,
+                      let main = tasks.first(where: { $0.id == mainId }),
+                      main.state != .failed {
+                main.state = .working
+            }
+            return
+        }
+
         guard let task = tasks.first(where: { $0.id == taskId }) else { return }
-        if state == "TASK_STATE_FAILED" || state == "failed" {
+        if state.lowercased() == "task_state_failed" || state.lowercased() == "failed" {
             task.state = .failed
         } else if TaskState.isTerminal(state) {
             task.state = .completed
@@ -300,6 +408,137 @@ class ConversationVM {
             }
         }
         refreshMainTaskState(for: task.parentTaskId ?? task.id)
+    }
+
+    @MainActor
+    private func applyStreamKindEvent(_ object: [String: Any], kind: String) {
+        let taskId = (object["taskId"] as? String) ?? (object["id"] as? String)
+        guard let taskId else { return }
+
+        switch kind {
+        case "task":
+            adoptServerTaskId(taskId)
+            if tasks.first(where: { $0.id == taskId }) == nil {
+                _ = task(for: taskId)
+            }
+            if let status = object["status"] as? [String: Any],
+               let state = status["state"] as? String {
+                updateTaskState(taskId, state: state)
+            }
+        case "status-update":
+            let task = task(for: taskId)
+            let isFinal = object["final"] as? Bool ?? false
+            if let status = object["status"] as? [String: Any] {
+                if let message = status["message"] as? [String: Any] {
+                    applyAgentStreamMessage(message, to: task, isFinal: isFinal)
+                }
+                if let state = status["state"] as? String {
+                    updateTaskState(taskId, state: state)
+                }
+            }
+            if isFinal {
+                promoteSummaryFromStreamBuffer(for: task)
+            }
+        case "artifact-update":
+            let task = task(for: taskId)
+            if let artifact = object["artifact"] as? [String: Any],
+               let parts = artifact["parts"] as? [[String: Any]] {
+                let text = parts.compactMap { $0["text"] as? String }.joined()
+                if !text.isEmpty {
+                    task.summaryBuffer += text
+                    task.summary = task.summaryBuffer
+                }
+            }
+        default:
+            break
+        }
+        notifyChange()
+    }
+
+    private func applyAgentStreamMessage(_ message: [String: Any], to task: AITask, isFinal: Bool) {
+        guard let parts = message["parts"] as? [[String: Any]] else { return }
+
+        for part in parts {
+            if let text = part["text"] as? String, !text.isEmpty {
+                if isFinal {
+                    task.summaryBuffer = text
+                    task.summary = text
+                } else {
+                    appendStreamText(to: task, content: text)
+                    task.summaryBuffer = text
+                }
+                continue
+            }
+
+            guard let data = part["data"] as? [String: Any],
+                  let messageType = data["message_type"] as? String else {
+                continue
+            }
+
+            switch messageType {
+            case "initial":
+                let title = data["title"] as? String ?? ""
+                let desc = data["desc"] as? String ?? ""
+                appendProcessNote(to: task, title: title, body: desc)
+            case "execute":
+                let name = data["execute_type"] as? String ?? "execute"
+                let content = data["content"] as? String ?? ""
+                appendExecuteStep(to: task, name: name, content: content)
+            case "text":
+                let content = data["content"] as? String ?? ""
+                guard !content.isEmpty else { continue }
+                if isFinal {
+                    task.summaryBuffer = content
+                    task.summary = content
+                } else {
+                    appendStreamText(to: task, content: content)
+                    task.summaryBuffer = content
+                }
+            case "error":
+                let content = data["content"] as? String ?? data["data"] as? String ?? "未知错误"
+                task.errorMessage = content
+                task.state = .failed
+            case "completed":
+                break
+            default:
+                break
+            }
+        }
+    }
+
+    private func appendStreamText(to task: AITask, content: String) {
+        let round = Round()
+        round.reasoning = content
+        task.rounds.append(round)
+    }
+
+    private func promoteSummaryFromStreamBuffer(for task: AITask) {
+        guard task.summary == nil, !task.summaryBuffer.isEmpty else { return }
+        let summary = task.summaryBuffer
+        task.summary = summary
+        if let last = task.rounds.last,
+           last.toolCalls.isEmpty,
+           last.toolResults.isEmpty,
+           last.reasoning == summary {
+            task.rounds.removeLast()
+        }
+    }
+
+    private func appendProcessNote(to task: AITask, title: String, body: String) {
+        let round = Round()
+        round.reasoning = [title, body]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        task.rounds.append(round)
+    }
+
+    private func appendExecuteStep(to task: AITask, name: String, content: String) {
+        let round = Round()
+        if !content.isEmpty {
+            round.reasoning = content
+        }
+        round.toolCalls.append(ToolCall(name: name, args: [:]))
+        task.rounds.append(round)
     }
 
     private func refreshMainTaskState(for taskId: String) {
@@ -323,23 +562,28 @@ class ConversationVM {
         else {
             return data
         }
-        for key in ["statusUpdate", "artifactUpdate", "task"] {
+        for key in ["statusUpdate", "status-update", "artifactUpdate", "artifact-update", "task"] {
             if let inner = result[key] {
                 return (try? JSONSerialization.data(withJSONObject: inner)) ?? data
             }
+        }
+        if result["kind"] != nil {
+            return (try? JSONSerialization.data(withJSONObject: result)) ?? data
         }
         return (try? JSONSerialization.data(withJSONObject: result)) ?? data
     }
 
     private func task(for taskId: String) -> AITask {
+        if orchestratesSubTasks {
+            if multiTaskServerId == nil {
+                multiTaskServerId = taskId
+            }
+            return ensureCurrentSubTask()
+        }
+
         if let existing = tasks.first(where: { $0.id == taskId }) {
             streamingTaskId = taskId
             return existing
-        }
-
-        if orchestratesSubTasks {
-            registerSubTask(taskId)
-            return tasks.first(where: { $0.id == taskId })!
         }
 
         let prompt = pendingPrompt ?? "新任务"
@@ -353,7 +597,14 @@ class ConversationVM {
 
     private func upsertRound(_ step: ReActStep, in task: AITask) {
         if step.step == "task_start" {
-            if let text = step.text, !text.isEmpty {
+            guard let text = step.text, !text.isEmpty else { return }
+            if orchestratesSubTasks {
+                if task.rounds.isEmpty && task.summary == nil {
+                    task.prompt = text
+                } else {
+                    _ = beginNextSubTask(prompt: text)
+                }
+            } else {
                 task.prompt = text
             }
             return

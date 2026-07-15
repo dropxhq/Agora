@@ -111,6 +111,23 @@ struct AgentCardView: View {
                             }
                         }
                     }
+                    if let examples = skill.examples, !examples.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Examples")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.tertiary)
+                            ForEach(examples, id: \.self) { example in
+                                Text(example)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+                            }
+                        }
+                    }
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -270,6 +287,8 @@ enum AgentCardErrorMessage {
             default:
                 break
             }
+        } else if error is DecodingError {
+            lines.append("Agent Card JSON 格式与客户端不兼容（缺少 url 或 supportedInterfaces）。")
         }
         lines.append("请确认后端已启动，并在设置中检查 Server URL。")
         return lines.joined(separator: "\n")

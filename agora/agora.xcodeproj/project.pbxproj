@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A2A000032FCB1CAA00516FC5 /* AgoraA2A in Frameworks */ = {isa = PBXBuildFile; productRef = A2A000022FCB1CAA00516FC5 /* AgoraA2A */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		503A4F8F2FCB1CAA00516FC5 /* agora.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = agora.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -36,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A2A000032FCB1CAA00516FC5 /* AgoraA2A in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 			);
 			name = agora;
 			packageProductDependencies = (
+				A2A000022FCB1CAA00516FC5 /* AgoraA2A */,
 			);
 			productName = agora;
 			productReference = 503A4F8F2FCB1CAA00516FC5 /* agora.app */;
@@ -107,6 +113,9 @@
 			);
 			mainGroup = 503A4F862FCB1CAA00516FC5;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A2A000012FCB1CAA00516FC5 /* XCLocalSwiftPackageReference "../rust/agora-a2a/AgoraA2A" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 503A4F902FCB1CAA00516FC5 /* Products */;
 			projectDirPath = "";
@@ -178,6 +187,13 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					SystemConfiguration,
+					"-framework",
+					Security,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = top.dropx.agora;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -234,6 +250,13 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					SystemConfiguration,
+					"-framework",
+					Security,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = top.dropx.agora;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -392,6 +415,21 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A2A000012FCB1CAA00516FC5 /* XCLocalSwiftPackageReference "../rust/agora-a2a/AgoraA2A" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../rust/agora-a2a/AgoraA2A;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A2A000022FCB1CAA00516FC5 /* AgoraA2A */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A2A000012FCB1CAA00516FC5 /* XCLocalSwiftPackageReference "../rust/agora-a2a/AgoraA2A" */;
+			productName = AgoraA2A;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 503A4F872FCB1CAA00516FC5 /* Project object */;
 }

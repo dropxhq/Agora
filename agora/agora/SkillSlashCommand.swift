@@ -1,6 +1,12 @@
 import Foundation
 
 enum SkillSlashCommand {
+    struct OutgoingMessage: Equatable {
+        let text: String
+        let skill: AgentSkill?
+        let rawInput: String
+    }
+
     struct ActiveQuery: Equatable {
         let query: String
     }
@@ -29,6 +35,24 @@ enum SkillSlashCommand {
             return "/\(skill.id) \(example)"
         }
         return "/\(skill.id) "
+    }
+
+    static func prepareOutgoing(from text: String, skills: [AgentSkill]) -> OutgoingMessage {
+        OutgoingMessage(
+            text: resolveOutgoingMessage(from: text, skills: skills),
+            skill: matchedSkill(from: text, in: skills),
+            rawInput: text
+        )
+    }
+
+    static func matchedSkill(from text: String, in skills: [AgentSkill]) -> AgentSkill? {
+        guard text.hasPrefix("/") else { return nil }
+        let body = String(text.dropFirst())
+        if let spaceIndex = body.firstIndex(where: { $0.isWhitespace }) {
+            let token = String(body[..<spaceIndex])
+            return matchingSkill(forToken: token, in: skills)
+        }
+        return matchingSkill(forToken: body, in: skills)
     }
 
     static func resolveOutgoingMessage(from text: String, skills: [AgentSkill]) -> String {

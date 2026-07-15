@@ -1,0 +1,10 @@
+# Rust
+rust/target/
+rust/agora-a2a/generated/
+rust/agora-a2a/AgoraA2A/
+
+# Xcode / macOS
+.DS_Store
+**/xcuserdata/
+*.xcuserdata
+DerivedData/

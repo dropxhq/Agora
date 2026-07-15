@@ -63,8 +63,7 @@ class WorkspaceStore {
     // MARK: - Backend CRUD
 
     @discardableResult
-    func addBackend(name: String, serverURL: String) -> Backend {
-        let backend = Backend(name: name, serverURL: serverURL)
+    func addBackend(_ backend: Backend) -> Backend {
         backends.append(backend)
         let session = addSession(to: backend.id)
         selectedSessionId = session.id
@@ -74,9 +73,10 @@ class WorkspaceStore {
 
     func updateBackend(_ backend: Backend) {
         guard let idx = backends.firstIndex(where: { $0.id == backend.id }) else { return }
-        let previousURL = backends[idx].serverURL
+        let previous = backends[idx]
         backends[idx] = backend
-        if previousURL != backend.serverURL {
+        if previous.serverURL != backend.serverURL
+            || previous.requestHeaders != backend.requestHeaders {
             invalidateAgentCard(for: backend.id)
         }
         save()
@@ -157,7 +157,7 @@ class WorkspaceStore {
             defer { agentCardTasks[backendId] = nil }
             do {
                 let url = URL(string: backend.serverURL) ?? URL(string: "http://localhost:8000")!
-                let card = try await A2AClient(baseURL: url).fetchAgentCard()
+                let card = try await backend.makeA2AClient(baseURL: url, includeMessageMetadata: false).fetchAgentCard()
                 agentCards[backendId] = card
                 agentCardErrors[backendId] = nil
             } catch {
@@ -171,6 +171,18 @@ class WorkspaceStore {
         agentCardErrors.removeValue(forKey: backendId)
         agentCardTasks[backendId]?.cancel()
         agentCardTasks[backendId] = nil
+    }
+
+    /// JSONRPC endpoint for messaging: prefer resolved Agent Card url, fall back to configured Server URL.
+    func a2aClient(for backend: Backend) -> A2AClient {
+        backend.makeA2AClient(baseURL: jsonrpcEndpointURL(for: backend))
+    }
+
+    func jsonrpcEndpointURL(for backend: Backend) -> URL {
+        if let card = agentCards[backend.id], let url = URL(string: card.url) {
+            return url
+        }
+        return URL(string: backend.serverURL) ?? URL(string: "http://localhost:8000")!
     }
 
     // MARK: - Persistence
