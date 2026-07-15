@@ -4,8 +4,10 @@ struct GlassInputBar: View {
     @Binding var text: String
     var placeholder: String = "输入问题..."
     var skills: [AgentSkill] = []
+    var isStreaming: Bool = false
     var isSendDisabled: Bool = false
     var onSubmit: () -> Void
+    var onStop: () -> Void = {}
 
     @State private var inputHeight: CGFloat = MessageInputMetrics.lineHeight
     @State private var selectedIndex = 0
@@ -13,6 +15,10 @@ struct GlassInputBar: View {
 
     private var canSend: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSendDisabled
+    }
+
+    private var actionEnabled: Bool {
+        isStreaming || canSend
     }
 
     private var inputShape: RoundedRectangle {
@@ -46,28 +52,44 @@ struct GlassInputBar: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
 
-                MultilineMessageInput(
-                    text: $text,
-                    height: $inputHeight,
-                    placeholder: placeholder,
-                    onSubmit: onSubmit,
-                    canSend: canSend,
-                    autocompleteActive: isAutocompleteVisible,
-                    onAutocompleteNavigate: { delta in
-                        navigateSelection(by: delta)
-                    },
-                    onAutocompleteAccept: {
-                        acceptHighlightedSelection()
-                    },
-                    onAutocompleteDismiss: {
-                        dismissAutocomplete = true
+                HStack(alignment: .bottom, spacing: 8) {
+                    MultilineMessageInput(
+                        text: $text,
+                        height: $inputHeight,
+                        placeholder: placeholder,
+                        onSubmit: onSubmit,
+                        canSend: canSend && !isStreaming,
+                        autocompleteActive: isAutocompleteVisible,
+                        onAutocompleteNavigate: { delta in
+                            navigateSelection(by: delta)
+                        },
+                        onAutocompleteAccept: {
+                            acceptHighlightedSelection()
+                        },
+                        onAutocompleteDismiss: {
+                            dismissAutocomplete = true
+                        }
+                    )
+                    .font(.body)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                    Button(action: handleAction) {
+                        Image(systemName: isStreaming ? "stop.fill" : "arrow.up")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(actionEnabled ? .white : .secondary)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                Circle().fill(actionEnabled ? Color.accentColor : Color.secondary.opacity(0.25))
+                            )
                     }
-                )
-                .font(.body)
-                .multilineTextAlignment(.leading)
+                    .buttonStyle(.plain)
+                    .disabled(!actionEnabled)
+                    .help(isStreaming ? "停止生成" : "发送")
+                    .padding(.bottom, 2)
+                }
                 .padding(.horizontal, 12)
                 .padding(.vertical, MessageInputMetrics.verticalPadding)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .glassEffect(.regular.interactive(), in: inputShape)
             }
         }
@@ -81,6 +103,14 @@ struct GlassInputBar: View {
         }
         .onChange(of: filteredSkills.count) { _, _ in
             clampSelectedIndex()
+        }
+    }
+
+    private func handleAction() {
+        if isStreaming {
+            onStop()
+        } else if canSend {
+            onSubmit()
         }
     }
 

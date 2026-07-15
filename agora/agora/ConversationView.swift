@@ -117,8 +117,10 @@ struct ConversationView: View {
                     text: $input,
                     placeholder: agentSkills.isEmpty ? "输入问题..." : "输入问题，或 / 选择 Skill…",
                     skills: agentSkills,
-                    isSendDisabled: vm.isStreaming || store.agentCard(for: backend.id) == nil,
-                    onSubmit: { submit(vm: vm) }
+                    isStreaming: vm.isStreaming,
+                    isSendDisabled: store.agentCard(for: backend.id) == nil,
+                    onSubmit: { submit(vm: vm) },
+                    onStop: { vm.stop() }
                 )
             }
 
@@ -202,75 +204,45 @@ struct MainTaskHeader: View {
     let subTaskCount: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: stateIcon)
-                    .foregroundStyle(stateColor)
-                Text("主任务")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                if subTaskCount > 0 {
-                    Text("\(subTaskCount) 个子任务")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer(minLength: 0)
-                Text(stateLabel)
-                    .font(.caption2)
-                    .foregroundStyle(stateColor)
+        VStack(alignment: .trailing, spacing: 8) {
+            HStack {
+                Spacer(minLength: 48)
+                Text(task.prompt)
+                    .font(.body)
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
 
-            Text(task.prompt)
-                .font(.body)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if subTaskCount > 0 {
+                Text("\(subTaskCount) 个子任务")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
 
             if let skillId = task.skillId {
-                HStack(spacing: 6) {
-                    Image(systemName: "wand.and.stars")
-                        .font(.caption2)
-                    Text("/\(skillId)")
-                        .font(.caption.monospaced())
-                    if let skillName = task.skillName {
-                        Text(skillName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                HStack {
+                    Spacer(minLength: 48)
+                    HStack(spacing: 6) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.caption2)
+                        Text("/\(skillId)")
+                            .font(.caption.monospaced())
+                        if let skillName = task.skillName {
+                            Text(skillName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .foregroundStyle(.purple)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.purple.opacity(0.1), in: Capsule())
                 }
-                .foregroundStyle(.purple)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.purple.opacity(0.1), in: Capsule())
             }
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var stateIcon: String {
-        switch task.state {
-        case .working: return "circle.dotted"
-        case .completed: return "checkmark.circle.fill"
-        case .failed: return "xmark.circle.fill"
-        case .idle: return "circle"
-        }
-    }
-
-    private var stateColor: Color {
-        switch task.state {
-        case .working: return .orange
-        case .completed: return .green
-        case .failed: return .red
-        case .idle: return .secondary
-        }
-    }
-
-    private var stateLabel: String {
-        switch task.state {
-        case .working: return "执行中"
-        case .completed: return "已完成"
-        case .failed: return "失败"
-        case .idle: return "空闲"
-        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
@@ -291,33 +263,61 @@ struct SubTaskSection: View {
 
 struct TurnView: View {
     let task: AITask
-    @State private var expanded = true
+    @State private var expanded = false
+    @State private var expandGeneration = 0
+
+    private var hasProcess: Bool {
+        !task.rounds.isEmpty
+    }
+
+    private var processLabel: String {
+        if task.state == .working {
+            return "处理中..."
+        }
+        let stepCount = max(task.rounds.count, 1)
+        return "已完成 \(stepCount) 步骤"
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            DisclosureGroup(isExpanded: $expanded) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(task.rounds.indices, id: \.self) { i in
-                        RoundView(round: task.rounds[i])
+        VStack(alignment: .leading, spacing: 16) {
+            if hasProcess {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) {
+                        expanded.toggle()
+                        if expanded {
+                            expandGeneration += 1
+                        }
                     }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkle.magnifyingglass")
+                            .font(.subheadline)
+                        Text(processLabel)
+                            .font(.subheadline)
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
-                .padding(.leading, 4)
-            } label: {
-                Label(
-                    task.state == .working ? "执行中..." : "执行过程",
-                    systemImage: task.state == .working ? "circle.dotted" : "checkmark.circle"
-                )
-                .foregroundStyle(task.state == .working ? .orange : .secondary)
+                .buttonStyle(.plain)
+
+                if expanded {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(task.rounds.indices, id: \.self) { i in
+                            RoundView(round: task.rounds[i], expandGeneration: expandGeneration)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(.secondary)
+                }
             }
 
             if let summary = task.summary {
                 MarkdownText(content: summary)
-                    .padding(12)
+                    .font(.body)
+                    .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -347,6 +347,7 @@ struct ConnectionErrorBanner: View {
 
 struct RoundView: View {
     let round: Round
+    var expandGeneration: Int = 0
     @State private var toolsExpanded = false
 
     private var hasTools: Bool {
@@ -374,6 +375,14 @@ struct RoundView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: expandGeneration) { _, _ in
+            toolsExpanded = true
+        }
+        .onAppear {
+            if expandGeneration > 0 {
+                toolsExpanded = true
+            }
+        }
     }
 
     private var shouldShowTools: Bool {
@@ -389,63 +398,108 @@ struct RoundView: View {
                 toolsExpanded.toggle()
             }
         } label: {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "bubble.left.fill")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "brain.head.profile")
+                    .font(.caption)
+                    .frame(width: 14, alignment: .center)
                     .padding(.top, 2)
 
-                MarkdownText(content: text)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                reasoningLabel(text)
+                    .font(.subheadline)
                     .multilineTextAlignment(.leading)
-
-                if hasTools {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(toolsExpanded ? 90 : 0))
-                        .padding(.top, 4)
-                }
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .foregroundStyle(.secondary)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!hasTools)
+    }
+
+    private func reasoningLabel(_ text: String) -> Text {
+        let body = Text(text)
+        guard hasTools else { return body }
+        let chevron = Text(Image(systemName: toolsExpanded ? "chevron.down" : "chevron.right"))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+        return body + Text(" ") + chevron
     }
 
     private var toolsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(toolPairs.enumerated()), id: \.offset) { _, pair in
-                if let call = pair.call {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "wrench.fill")
-                            .font(.callout)
-                            .foregroundStyle(.blue)
-                        Text(call.name)
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.blue)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-
-                if let result = pair.result {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: result.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(result.ok ? .green : .red)
-                        Text(result.result)
-                            .font(.caption)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
+                ToolCallResultRow(
+                    call: pair.call,
+                    result: pair.result,
+                    expandGeneration: expandGeneration
+                )
             }
         }
-        .padding(.leading, 24)
+        .padding(.leading, 20)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ToolCallResultRow: View {
+    let call: ToolCall?
+    let result: ToolResult?
+    var expandGeneration: Int = 0
+    @State private var resultExpanded = false
+
+    private var hasResult: Bool { result != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let call {
+                Button {
+                    guard hasResult else { return }
+                    withAnimation(.snappy(duration: 0.2)) {
+                        resultExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "wrench")
+                            .font(.caption)
+                            .frame(width: 14, alignment: .center)
+                        Text(call.name)
+                            .font(.caption)
+                        if hasResult {
+                            Image(systemName: resultExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasResult)
+            }
+
+            if let result, call == nil || resultExpanded {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "tray")
+                        .font(.caption)
+                        .frame(width: 14, alignment: .center)
+                        .padding(.top, 1)
+                    Text(result.result)
+                        .font(.caption)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: expandGeneration) { _, _ in
+            if hasResult {
+                resultExpanded = true
+            }
+        }
+        .onAppear {
+            if expandGeneration > 0, hasResult {
+                resultExpanded = true
+            }
+        }
     }
 }
 

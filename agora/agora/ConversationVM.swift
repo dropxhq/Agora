@@ -10,6 +10,7 @@ class ConversationVM {
 
     private var pendingPrompt: String?
     private var streamingTaskId: String?
+    private var streamTask: Task<Void, Never>?
     private var orchestratesSubTasks = false
     private var multiTaskServerId: String?
     private var currentSubTaskId: String?
@@ -77,6 +78,8 @@ class ConversationVM {
     }
 
     func send(text: String, client: A2AClient, contextId: String, skill: AgentSkill? = nil) {
+        streamTask?.cancel()
+
         let placeholderId = "main-\(UUID().uuidString)"
         let task = AITask(
             id: placeholderId,
@@ -96,7 +99,7 @@ class ConversationVM {
         pendingPrompt = text
         notifyChange()
 
-        Task { @MainActor in
+        streamTask = Task { @MainActor in
             do {
                 let stream = client.sendStreamingMessage(text: text, contextId: contextId)
                 for try await data in stream {
@@ -107,10 +110,39 @@ class ConversationVM {
                 orchestratesSubTasks = false
                 multiTaskServerId = nil
                 currentSubTaskId = nil
+            } catch is CancellationError {
+                markStreamingStopped()
             } catch {
                 handleStreamError(error, serverURL: client.baseURL)
             }
+            streamTask = nil
         }
+    }
+
+    func stop() {
+        guard isStreaming else { return }
+        streamTask?.cancel()
+        streamTask = nil
+        markStreamingStopped()
+    }
+
+    @MainActor
+    private func markStreamingStopped() {
+        for task in tasks where task.state == .working {
+            promoteSummaryFromStreamBuffer(for: task)
+            if task.summary != nil || !task.rounds.isEmpty {
+                task.state = .completed
+            } else {
+                task.state = .idle
+            }
+            refreshMainTaskState(for: task.parentTaskId ?? task.id)
+        }
+        pendingPrompt = nil
+        streamingTaskId = nil
+        orchestratesSubTasks = false
+        multiTaskServerId = nil
+        currentSubTaskId = nil
+        notifyChange()
     }
 
     func snapshot() -> SessionSnapshot {
