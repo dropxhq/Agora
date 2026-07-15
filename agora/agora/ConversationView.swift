@@ -298,10 +298,12 @@ struct TurnView: View {
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(task.rounds.indices, id: \.self) { i in
-                        RoundView(round: task.rounds[i], index: i + 1)
+                        RoundView(round: task.rounds[i])
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
                 .padding(.leading, 4)
             } label: {
                 Label(
@@ -345,57 +347,105 @@ struct ConnectionErrorBanner: View {
 
 struct RoundView: View {
     let round: Round
-    let index: Int
-    @State private var resultsExpanded = false
+    @State private var toolsExpanded = false
+
+    private var hasTools: Bool {
+        !round.toolCalls.isEmpty || !round.toolResults.isEmpty
+    }
+
+    private var toolPairs: [(call: ToolCall?, result: ToolResult?)] {
+        let count = max(round.toolCalls.count, round.toolResults.count)
+        return (0..<count).map { i in
+            (
+                i < round.toolCalls.count ? round.toolCalls[i] : nil,
+                i < round.toolResults.count ? round.toolResults[i] : nil
+            )
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Round \(index)").font(.caption).foregroundStyle(.tertiary)
-
             if let r = round.reasoning {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "bubble.left.fill")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-                    MarkdownText(content: r)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+                reasoningRow(r)
             }
 
-            ForEach(round.toolCalls) { tc in
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(tc.name)
-                            .font(.callout.weight(.medium))
-                    }
-                } icon: {
-                    Image(systemName: "wrench.fill")
-                }
-                .font(.callout)
-                .foregroundStyle(.blue)
-            }
-
-            if !round.toolResults.isEmpty {
-                DisclosureGroup(isExpanded: $resultsExpanded) {
-                    ForEach(round.toolResults) { tr in
-                        HStack(alignment: .top) {
-                            Image(systemName: tr.ok ? "checkmark.circle" : "xmark.circle")
-                                .foregroundStyle(tr.ok ? .green : .red)
-                            Text(tr.result).font(.caption.monospaced())
-                        }
-                    }
-                } label: {
-                    Label("工具结果 (\(round.toolResults.count))", systemImage: "tray.fill")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+            if shouldShowTools {
+                toolsSection
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var shouldShowTools: Bool {
+        guard hasTools else { return false }
+        // 无 reasoning 时直接展示工具；有 reasoning 时由 > 控制，默认收起
+        return round.reasoning == nil || toolsExpanded
+    }
+
+    private func reasoningRow(_ text: String) -> some View {
+        Button {
+            guard hasTools else { return }
+            withAnimation(.snappy(duration: 0.2)) {
+                toolsExpanded.toggle()
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "bubble.left.fill")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+
+                MarkdownText(content: text)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.leading)
+
+                if hasTools {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(toolsExpanded ? 90 : 0))
+                        .padding(.top, 4)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasTools)
+    }
+
+    private var toolsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(toolPairs.enumerated()), id: \.offset) { _, pair in
+                if let call = pair.call {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "wrench.fill")
+                            .font(.callout)
+                            .foregroundStyle(.blue)
+                        Text(call.name)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.blue)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                if let result = pair.result {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: result.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(result.ok ? .green : .red)
+                        Text(result.result)
+                            .font(.caption)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(.leading, 24)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
