@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A2A000032FCB1CAA00516FC5 /* AgoraA2A in Frameworks */ = {isa = PBXBuildFile; productRef = A2A000022FCB1CAA00516FC5 /* AgoraA2A */; };
+		MDUI000032FCB1CAA00516FC5 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = MDUI000022FCB1CAA00516FC5 /* MarkdownUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +42,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A2A000032FCB1CAA00516FC5 /* AgoraA2A in Frameworks */,
+				MDUI000032FCB1CAA00516FC5 /* MarkdownUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -84,6 +86,7 @@
 			name = agora;
 			packageProductDependencies = (
 				A2A000022FCB1CAA00516FC5 /* AgoraA2A */,
+				MDUI000022FCB1CAA00516FC5 /* MarkdownUI */,
 			);
 			productName = agora;
 			productReference = 503A4F8F2FCB1CAA00516FC5 /* agora.app */;
@@ -115,6 +118,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A2A000012FCB1CAA00516FC5 /* XCLocalSwiftPackageReference "../rust/agora-a2a/AgoraA2A" */,
+				MDUI000012FCB1CAA00516FC5 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 503A4F902FCB1CAA00516FC5 /* Products */;
@@ -423,11 +427,27 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		MDUI000012FCB1CAA00516FC5 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.4.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		A2A000022FCB1CAA00516FC5 /* AgoraA2A */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A2A000012FCB1CAA00516FC5 /* XCLocalSwiftPackageReference "../rust/agora-a2a/AgoraA2A" */;
 			productName = AgoraA2A;
+		};
+		MDUI000022FCB1CAA00516FC5 /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = MDUI000012FCB1CAA00516FC5 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
+			productName = MarkdownUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
