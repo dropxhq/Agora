@@ -350,14 +350,22 @@ class ConversationVM {
         if let e = try? decoder.decode(TaskArtifactUpdateEvent.self, from: payload) {
             let task = task(for: e.taskId)
             let text = e.artifact.parts.compactMap(\.text).joined()
-            task.summaryBuffer += text
-            if e.lastChunk == true {
+            if !text.isEmpty {
+                if e.append == true {
+                    task.summaryBuffer += text
+                } else {
+                    task.summaryBuffer = text
+                }
+                // Show intermediate markdown drafts before lastChunk.
                 task.summary = task.summaryBuffer
+            }
+            if e.lastChunk == true {
                 if orchestratesSubTasks, task.isSubTask {
                     task.state = .completed
                 }
             }
             notifyChange()
+            return
         }
     }
 
@@ -477,7 +485,12 @@ class ConversationVM {
                let parts = artifact["parts"] as? [[String: Any]] {
                 let text = parts.compactMap { $0["text"] as? String }.joined()
                 if !text.isEmpty {
-                    task.summaryBuffer += text
+                    let append = object["append"] as? Bool ?? true
+                    if append {
+                        task.summaryBuffer += text
+                    } else {
+                        task.summaryBuffer = text
+                    }
                     task.summary = task.summaryBuffer
                 }
             }

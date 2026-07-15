@@ -21,7 +21,7 @@ SERVER_PORT = 8000
 SERVER_URL = f"http://localhost:{SERVER_PORT}"
 
 
-def _build_skills() -> tuple[AgentSkill, AgentSkill]:
+def _build_skills() -> tuple[AgentSkill, AgentSkill, AgentSkill]:
     mock_react = AgentSkill(
         id="mock-react",
         name="Mock ReAct",
@@ -45,11 +45,28 @@ def _build_skills() -> tuple[AgentSkill, AgentSkill]:
             "多任务：收集背景信息；检索相关资料；整理总结",
         ],
     )
-    return mock_react, multi_task
+    markdown_arch = AgentSkill(
+        id="mock-markdown-arch",
+        name="Markdown Architecture",
+        description=(
+            "Rich ReAct demo: multiple tool calls per reasoning round, "
+            "streams an intermediate Markdown architecture draft, "
+            "then replaces it with a final Markdown architecture document."
+        ),
+        input_modes=["text/plain"],
+        output_modes=["text/markdown", "text/plain"],
+        tags=["a2a", "mock", "markdown", "architecture"],
+        examples=[
+            "mock-markdown-arch Agora Client",
+            "markdown arch 交易策略服务",
+            "架构文档：A2A Streaming",
+        ],
+    )
+    return mock_react, multi_task, markdown_arch
 
 
 def _build_public_agent_card() -> AgentCard:
-    mock_react, multi_task = _build_skills()
+    mock_react, multi_task, markdown_arch = _build_skills()
     return AgentCard(
         name="Agora A2A Demo Agent",
         description="Mock A2A server for Agora client debugging.",
@@ -64,7 +81,7 @@ def _build_public_agent_card() -> AgentCard:
                 protocol_version="1.0",
             )
         ],
-        skills=[mock_react, multi_task],
+        skills=[mock_react, multi_task, markdown_arch],
     )
 
 
