@@ -311,11 +311,19 @@ struct TurnView: View {
                 }
             }
 
-            if let summary = task.summary {
-                MarkdownText(content: summary)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if task.hasResultContent {
+                let live = task.summaryBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !task.resultBlocks.isEmpty || !live.isEmpty {
+                    ResultBlocksView(
+                        blocks: task.resultBlocks,
+                        liveMarkdown: live.isEmpty ? nil : live
+                    )
+                } else if let summary = task.summary {
+                    MarkdownText(content: summary)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

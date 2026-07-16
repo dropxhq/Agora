@@ -7,7 +7,14 @@ import re
 import uuid
 from typing import Any, Optional
 
-from a2a.helpers import new_data_part, new_task, new_task_from_user_message, new_text_part
+from a2a.helpers import (
+    new_data_part,
+    new_raw_part,
+    new_task,
+    new_task_from_user_message,
+    new_text_part,
+    new_url_part,
+)
 from a2a.server.agent_execution import RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
@@ -22,10 +29,25 @@ MARKDOWN_ARCH_TRIGGERS = (
     "架构文档",
     "markdown架构",
 )
+ALL_ARTIFACTS_TRIGGERS = (
+    "mock-all-artifacts",
+    "all-artifacts",
+    "all artifacts",
+    "all_artifacts",
+    "全部artifact",
+    "全部 artifact",
+    "artifact类型",
+    "artifact 类型",
+)
 DEFAULT_SUBTASKS = (
     "收集背景信息",
     "检索相关资料",
     "整理并输出总结",
+)
+# Minimal valid 1×1 PNG (red pixel) for raw binary file demos.
+_PNG_1X1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
+    "7753de0000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae426082"
 )
 
 
@@ -33,6 +55,9 @@ class MockAgent:
     """Mock agent that emits ReAct-style status and artifact updates."""
 
     async def run(self, user_text: str, task_updater: TaskUpdater) -> None:
+        if is_all_artifacts_demo(user_text):
+            await emit_all_artifacts_task(task_updater, user_text)
+            return
         if is_markdown_arch_demo(user_text):
             await emit_markdown_arch_task(task_updater, user_text)
             return
@@ -47,6 +72,11 @@ def is_multi_task_demo(user_text: str) -> bool:
 def is_markdown_arch_demo(user_text: str) -> bool:
     lowered = user_text.strip().lower()
     return any(trigger in lowered for trigger in MARKDOWN_ARCH_TRIGGERS)
+
+
+def is_all_artifacts_demo(user_text: str) -> bool:
+    lowered = user_text.strip().lower()
+    return any(trigger in lowered for trigger in ALL_ARTIFACTS_TRIGGERS)
 
 
 def _strip_multi_task_trigger(user_text: str) -> str:
@@ -392,7 +422,7 @@ async def _emit_steps(
     step_delay: float,
 ) -> None:
     for step in steps:
-        if step.get("step") == "__emit_draft__":
+        if step.get("step") in {"__emit_draft__", "__emit_artifacts__"}:
             continue
         message = updater.new_agent_message(
             [new_data_part(step, media_type="application/json")]
@@ -402,6 +432,363 @@ async def _emit_steps(
             message=message,
         )
         await asyncio.sleep(step_delay)
+
+
+def _all_artifacts_topic(user_text: str) -> str:
+    text = user_text.strip()
+    for trigger in ALL_ARTIFACTS_TRIGGERS:
+        text = re.compile(re.escape(trigger), re.IGNORECASE).sub("", text)
+    text = text.strip(" \t:：-—|/").strip()
+    return text or "A2A Artifact Types"
+
+
+def _all_artifacts_steps(topic: str) -> list[dict[str, Any]]:
+    """ReAct rounds around a mid-stream emission of every A2A Part kind."""
+    return [
+        {"step": "task_start", "round": 0, "text": f"演示「{topic}」全部 artifact 类型"},
+        {
+            "step": "reasoning",
+            "round": 1,
+            "text": (
+                f"目标是把 A2A 1.0 可能的 Part 形态都作为独立 artifact 发出："
+                f"text / data / raw(file bytes) / url(file uri)。先核对协议字段。"
+            ),
+        },
+        {
+            "step": "tool_call",
+            "round": 1,
+            "name": "protocol_lookup",
+            "args": {"spec": "A2A", "version": "1.0", "focus": "Part oneof"},
+        },
+        {
+            "step": "tool_result",
+            "round": 1,
+            "name": "protocol_lookup",
+            "result": "Part content: text | data | raw | url；可附带 mediaType / filename。",
+            "ok": True,
+        },
+        {
+            "step": "tool_call",
+            "round": 1,
+            "name": "sample_fixture",
+            "args": {
+                "kinds": ["text", "data", "raw", "url"],
+                "include_binary": True,
+            },
+        },
+        {
+            "step": "tool_result",
+            "round": 1,
+            "name": "sample_fixture",
+            "result": "已准备 Markdown、JSON、PNG bytes、远程 URL 四类样例。",
+            "ok": True,
+        },
+        {
+            "step": "reasoning",
+            "round": 2,
+            "text": "材料齐了。先发出中间批次的全类型 artifact，再做一次校验并给出终稿说明。",
+        },
+        {
+            "step": "tool_call",
+            "round": 2,
+            "name": "payload_pack",
+            "args": {"topic": topic, "bundle": "mid-stream-artifacts"},
+        },
+        {
+            "step": "tool_result",
+            "round": 2,
+            "name": "payload_pack",
+            "result": "中间批次打包完成：4 个独立 artifact + 1 个混合 parts artifact。",
+            "ok": True,
+        },
+        # Marker consumed by emit_all_artifacts_task.
+        {"step": "__emit_artifacts__", "round": 2},
+        {
+            "step": "reasoning",
+            "round": 3,
+            "text": "中间 artifact 已发出。再核对客户端是否能按 artifactId 保留各类型，并输出终稿索引。",
+        },
+        {
+            "step": "tool_call",
+            "round": 3,
+            "name": "client_compat_check",
+            "args": {
+                "expects": [
+                    "text summary markdown",
+                    "data structured json",
+                    "raw file bytes",
+                    "url file reference",
+                    "mixed multi-part",
+                ]
+            },
+        },
+        {
+            "step": "tool_result",
+            "round": 3,
+            "name": "client_compat_check",
+            "result": "协议侧字段齐全；客户端可按需扩展非 text 渲染。",
+            "ok": True,
+        },
+        {
+            "step": "tool_call",
+            "round": 3,
+            "name": "doc_index",
+            "args": {"format": "markdown", "sections": ["catalog", "wire format"]},
+        },
+        {
+            "step": "tool_result",
+            "round": 3,
+            "name": "doc_index",
+            "result": "终稿索引已生成。",
+            "ok": True,
+        },
+        {
+            "step": "reasoning",
+            "round": 4,
+            "text": "校验完成，发布最终 Markdown 目录。",
+        },
+    ]
+
+
+def _all_artifacts_text_doc(topic: str) -> str:
+    return f"""# {topic} — Text Artifact
+
+> A2A `Part.text` 样例（`mediaType=text/markdown`）。
+
+## 本批次将发出的类型
+
+| Part | Artifact name | 说明 |
+| --- | --- | --- |
+| text | `artifact-text` | 本 Markdown |
+| data | `artifact-data` | 结构化 JSON |
+| raw | `artifact-raw-text` / `artifact-raw-png` | 内嵌文件 bytes |
+| url | `artifact-url` | 远端文件引用 |
+| mixed | `artifact-mixed` | 同一 artifact 含多种 Part |
+
+```text
+status(DataPart ReAct) → artifacts(text|data|raw|url) → status → artifact(text final)
+```
+"""
+
+
+def _all_artifacts_data_payload(topic: str) -> dict[str, Any]:
+    return {
+        "kind": "a2a.data",
+        "topic": topic,
+        "protocolVersion": "1.0",
+        "partTypes": [
+            {"field": "text", "mediaType": "text/markdown"},
+            {"field": "data", "mediaType": "application/json"},
+            {"field": "raw", "mediaType": "text/csv|image/png", "filename": True},
+            {"field": "url", "mediaType": "image/png", "filename": True},
+        ],
+        "notes": [
+            "raw 携带 base64 bytes + 可选 filename",
+            "url 指向可下载资源，不内嵌内容",
+        ],
+    }
+
+
+def _all_artifacts_csv(topic: str) -> bytes:
+    body = (
+        "part,artifact,media_type,filename\n"
+        f"text,artifact-text,text/markdown,\n"
+        f"data,artifact-data,application/json,\n"
+        f"raw,artifact-raw-text,text/csv,parts-catalog.csv\n"
+        f"raw,artifact-raw-png,image/png,pixel.png\n"
+        f"url,artifact-url,image/png,w3c-png-logo.png\n"
+        f"mixed,artifact-mixed,multi,mixed-parts\n"
+        f"topic,{topic},,\n"
+    )
+    return body.encode("utf-8")
+
+
+def _all_artifacts_final(topic: str) -> str:
+    return f"""# {topic} — Artifact 类型目录（最终版）
+
+## 一句话
+
+本 skill 在 ReAct 过程中间发出 **A2A 1.0 全部 Part 形态** 的 artifact，终稿仅做索引，不覆盖中间产物。
+
+## Wire Format 对照
+
+| Part field | JSON 形态 | 本 demo artifact |
+| --- | --- | --- |
+| `text` | `{{ "text": "...", "mediaType": "..." }}` | `artifact-text` |
+| `data` | `{{ "data": {{...}}, "mediaType": "application/json" }}` | `artifact-data` |
+| `raw` | `{{ "raw": "<base64>", "filename": "...", "mediaType": "..." }}` | `artifact-raw-text` / `artifact-raw-png` |
+| `url` | `{{ "url": "https://...", "filename": "...", "mediaType": "..." }}` | `artifact-url` |
+
+## 时序
+
+```text
+1) status: reasoning / tool_*
+2) artifact-text (markdown)
+3) artifact-data (json)
+4) artifact-raw-text (csv bytes)
+5) artifact-raw-png (png bytes)
+6) artifact-url (remote file)
+7) artifact-mixed (text + data + raw + url in one artifact)
+8) status: more tools
+9) artifact-catalog (final markdown)
+10) task completed
+```
+
+## Skill
+
+触发：`/mock-all-artifacts`
+
+---
+
+中间各类型 artifact 应仍保留在会话中；若客户端尚未渲染 `raw`/`url`，至少应能在协议层看到对应字段。
+"""
+
+
+async def _emit_all_part_artifacts(
+    updater: TaskUpdater,
+    topic: str,
+    *,
+    artifact_delay: float,
+) -> None:
+    """Emit one artifact per A2A Part kind, plus a mixed multi-part artifact."""
+    text_id = str(uuid.uuid4())
+    data_id = str(uuid.uuid4())
+    raw_text_id = str(uuid.uuid4())
+    raw_png_id = str(uuid.uuid4())
+    url_id = str(uuid.uuid4())
+    mixed_id = str(uuid.uuid4())
+
+    await updater.add_artifact(
+        [new_text_part(_all_artifacts_text_doc(topic), media_type="text/markdown")],
+        artifact_id=text_id,
+        name="artifact-text",
+        append=False,
+        last_chunk=True,
+    )
+    await asyncio.sleep(artifact_delay)
+
+    data_payload = _all_artifacts_data_payload(topic)
+    await updater.add_artifact(
+        [new_data_part(data_payload, media_type="application/json")],
+        artifact_id=data_id,
+        name="artifact-data",
+        append=False,
+        last_chunk=True,
+        metadata={"partKind": "data", "topic": topic},
+    )
+    await asyncio.sleep(artifact_delay)
+
+    await updater.add_artifact(
+        [
+            new_raw_part(
+                _all_artifacts_csv(topic),
+                media_type="text/csv",
+                filename="parts-catalog.csv",
+            )
+        ],
+        artifact_id=raw_text_id,
+        name="artifact-raw-text",
+        append=False,
+        last_chunk=True,
+        metadata={"partKind": "raw", "role": "text-file"},
+    )
+    await asyncio.sleep(artifact_delay)
+
+    await updater.add_artifact(
+        [
+            new_raw_part(
+                _PNG_1X1,
+                media_type="image/png",
+                filename="pixel.png",
+            )
+        ],
+        artifact_id=raw_png_id,
+        name="artifact-raw-png",
+        append=False,
+        last_chunk=True,
+        metadata={"partKind": "raw", "role": "binary-file"},
+    )
+    await asyncio.sleep(artifact_delay)
+
+    await updater.add_artifact(
+        [
+            new_url_part(
+                "https://www.w3.org/Icons/w3c_home.png",
+                media_type="image/png",
+                filename="w3c-png-logo.png",
+            )
+        ],
+        artifact_id=url_id,
+        name="artifact-url",
+        append=False,
+        last_chunk=True,
+        metadata={"partKind": "url", "role": "remote-file"},
+    )
+    await asyncio.sleep(artifact_delay)
+
+    # Single artifact whose parts cover every content field at once.
+    await updater.add_artifact(
+        [
+            new_text_part(
+                f"Mixed artifact for「{topic}」: text + data + raw + url in one `parts` array.",
+                media_type="text/plain",
+            ),
+            new_data_part(
+                {"bundle": "mixed", "topic": topic, "parts": ["text", "data", "raw", "url"]},
+                media_type="application/json",
+            ),
+            new_raw_part(
+                b"mixed-sidecar.txt from mock-all-artifacts\n",
+                media_type="text/plain",
+                filename="mixed-sidecar.txt",
+            ),
+            new_url_part(
+                "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+                media_type="application/pdf",
+                filename="dummy.pdf",
+            ),
+        ],
+        artifact_id=mixed_id,
+        name="artifact-mixed",
+        append=False,
+        last_chunk=True,
+        metadata={"partKind": "mixed"},
+    )
+    await asyncio.sleep(artifact_delay)
+
+
+async def emit_all_artifacts_task(
+    updater: TaskUpdater,
+    user_text: str,
+    *,
+    step_delay: float = 0.35,
+    artifact_delay: float = 0.25,
+) -> None:
+    topic = _all_artifacts_topic(user_text)
+    steps = _all_artifacts_steps(topic)
+    final = _all_artifacts_final(topic)
+
+    await updater.start_work()
+    await asyncio.sleep(0.3)
+
+    emit_index = next(
+        (i for i, step in enumerate(steps) if step.get("step") == "__emit_artifacts__"),
+        len(steps),
+    )
+
+    await _emit_steps(updater, steps[:emit_index], step_delay=step_delay)
+    await _emit_all_part_artifacts(updater, topic, artifact_delay=artifact_delay)
+    await _emit_steps(updater, steps[emit_index + 1 :], step_delay=step_delay)
+
+    await updater.add_artifact(
+        [new_text_part(final, media_type="text/markdown")],
+        artifact_id=str(uuid.uuid4()),
+        name="artifact-catalog",
+        append=False,
+        last_chunk=True,
+    )
+    await asyncio.sleep(0.2)
+    await updater.complete()
 
 
 async def emit_markdown_arch_task(

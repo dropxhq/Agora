@@ -423,7 +423,7 @@
 /* Begin XCLocalSwiftPackageReference section */
 		A2A000012FCB1CAA00516FC5 /* XCLocalSwiftPackageReference "../rust/agora-a2a/AgoraA2A" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../rust/agora-a2a/AgoraA2A;
+			relativePath = "../rust/agora-a2a/AgoraA2A";
 		};
 /* End XCLocalSwiftPackageReference section */
 

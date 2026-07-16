@@ -21,7 +21,7 @@ SERVER_PORT = 8000
 SERVER_URL = f"http://localhost:{SERVER_PORT}"
 
 
-def _build_skills() -> tuple[AgentSkill, AgentSkill, AgentSkill]:
+def _build_skills() -> tuple[AgentSkill, AgentSkill, AgentSkill, AgentSkill]:
     mock_react = AgentSkill(
         id="mock-react",
         name="Mock ReAct",
@@ -62,11 +62,35 @@ def _build_skills() -> tuple[AgentSkill, AgentSkill, AgentSkill]:
             "架构文档：A2A Streaming",
         ],
     )
-    return mock_react, multi_task, markdown_arch
+    all_artifacts = AgentSkill(
+        id="mock-all-artifacts",
+        name="All Artifact Types",
+        description=(
+            "Like mock-markdown-arch, but mid-stream emits every A2A 1.0 Part kind as artifacts: "
+            "text, data, raw (file bytes), url (file URI), plus a mixed multi-part artifact, "
+            "then finishes with a Markdown catalog."
+        ),
+        input_modes=["text/plain"],
+        output_modes=[
+            "text/markdown",
+            "text/plain",
+            "application/json",
+            "text/csv",
+            "image/png",
+            "application/pdf",
+        ],
+        tags=["a2a", "mock", "artifact", "file", "raw", "url"],
+        examples=[
+            "mock-all-artifacts Agora Client",
+            "all artifacts demo",
+            "全部 artifact 类型",
+        ],
+    )
+    return mock_react, multi_task, markdown_arch, all_artifacts
 
 
 def _build_public_agent_card() -> AgentCard:
-    mock_react, multi_task, markdown_arch = _build_skills()
+    mock_react, multi_task, markdown_arch, all_artifacts = _build_skills()
     return AgentCard(
         name="Agora A2A Demo Agent",
         description="Mock A2A server for Agora client debugging.",
@@ -81,7 +105,7 @@ def _build_public_agent_card() -> AgentCard:
                 protocol_version="1.0",
             )
         ],
-        skills=[mock_react, multi_task, markdown_arch],
+        skills=[mock_react, multi_task, markdown_arch, all_artifacts],
     )
 
 

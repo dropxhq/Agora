@@ -227,6 +227,7 @@ struct PersistedTask: Codable, Identifiable {
     var skillName: String?
     var rounds: [PersistedRound]
     var summary: String?
+    var resultBlocks: [ResultBlock]?
     var state: String
     var errorMessage: String?
     var createdAt: Date

@@ -130,7 +130,7 @@ class ConversationVM {
     private func markStreamingStopped() {
         for task in tasks where task.state == .working {
             promoteSummaryFromStreamBuffer(for: task)
-            if task.summary != nil || !task.rounds.isEmpty {
+            if task.hasResultContent || !task.rounds.isEmpty {
                 task.state = .completed
             } else {
                 task.state = .idle
@@ -167,6 +167,7 @@ class ConversationVM {
                         )
                     },
                     summary: task.summary,
+                    resultBlocks: task.resultBlocks,
                     state: task.state.label,
                     errorMessage: task.errorMessage,
                     createdAt: task.createdAt
@@ -208,7 +209,11 @@ class ConversationVM {
             return round
         }
         task.summary = snapshot.summary
-        task.summaryBuffer = snapshot.summary ?? ""
+        if let summary = snapshot.summary, !summary.isEmpty {
+            task.resultBlocks = [.markdown(summary)]
+            task.committedSummary = summary
+        }
+        task.summaryBuffer = ""
         task.state = TaskState.from(label: snapshot.state ?? "idle")
         task.errorMessage = snapshot.errorMessage
         tasks = [task]
@@ -239,7 +244,17 @@ class ConversationVM {
             return round
         }
         task.summary = persisted.summary
-        task.summaryBuffer = persisted.summary ?? ""
+        task.resultBlocks = persisted.resultBlocks ?? []
+        if task.resultBlocks.isEmpty, let summary = persisted.summary, !summary.isEmpty {
+            task.resultBlocks = [.markdown(summary)]
+        }
+        task.summaryBuffer = ""
+        task.committedSummary = task.resultBlocks
+            .compactMap {
+                if case .markdown(let text) = $0.payload { return text }
+                return nil
+            }
+            .joined(separator: "\n\n---\n\n")
         task.errorMessage = persisted.errorMessage
         return task
     }
@@ -334,7 +349,7 @@ class ConversationVM {
             let task = task(for: e.taskId)
             if let msg = e.status.message {
                 for part in msg.parts {
-                    if let step = part.data {
+                    if let step = part.reactStep {
                         upsertRound(step, in: task)
                     }
                 }
@@ -349,20 +364,16 @@ class ConversationVM {
 
         if let e = try? decoder.decode(TaskArtifactUpdateEvent.self, from: payload) {
             let task = task(for: e.taskId)
-            let text = e.artifact.parts.compactMap(\.text).joined()
-            if !text.isEmpty {
-                applyArtifactText(
-                    text,
-                    to: task,
-                    artifactId: e.artifact.artifactId,
-                    append: e.append
-                )
-            }
-            if e.lastChunk == true {
-                commitActiveArtifact(on: task)
-                if orchestratesSubTasks, task.isSubTask {
-                    task.state = .completed
-                }
+            applyArtifactParts(
+                e.artifact.parts,
+                to: task,
+                artifactId: e.artifact.artifactId,
+                artifactName: e.artifact.name,
+                append: e.append,
+                lastChunk: e.lastChunk
+            )
+            if e.lastChunk == true, orchestratesSubTasks, task.isSubTask {
+                task.state = .completed
             }
             notifyChange()
             return
@@ -482,22 +493,43 @@ class ConversationVM {
         case "artifact-update":
             let task = task(for: taskId)
             if let artifact = object["artifact"] as? [String: Any],
-               let parts = artifact["parts"] as? [[String: Any]] {
-                let text = parts.compactMap { $0["text"] as? String }.joined()
-                if !text.isEmpty {
-                    let artifactId = artifact["artifactId"] as? String
-                        ?? artifact["artifact_id"] as? String
-                    let append = object["append"] as? Bool
-                    applyArtifactText(text, to: task, artifactId: artifactId, append: append)
-                    if object["lastChunk"] as? Bool == true || object["last_chunk"] as? Bool == true {
-                        commitActiveArtifact(on: task)
-                    }
-                }
+               let partDicts = artifact["parts"] as? [[String: Any]] {
+                let parts = partDicts.map(Self.part(from:))
+                let artifactId = artifact["artifactId"] as? String
+                    ?? artifact["artifact_id"] as? String
+                let artifactName = artifact["name"] as? String
+                let append = object["append"] as? Bool
+                let lastChunk = object["lastChunk"] as? Bool ?? object["last_chunk"] as? Bool
+                applyArtifactParts(
+                    parts,
+                    to: task,
+                    artifactId: artifactId,
+                    artifactName: artifactName,
+                    append: append,
+                    lastChunk: lastChunk
+                )
             }
         default:
             break
         }
         notifyChange()
+    }
+
+    private static func part(from dict: [String: Any]) -> Part {
+        let dataValue: JSONValue?
+        if let data = dict["data"] {
+            dataValue = JSONValue.fromJSONObject(data)
+        } else {
+            dataValue = nil
+        }
+        return Part(
+            text: dict["text"] as? String,
+            data: dataValue,
+            raw: dict["raw"] as? String,
+            url: dict["url"] as? String,
+            mediaType: dict["mediaType"] as? String ?? dict["media_type"] as? String,
+            filename: dict["filename"] as? String ?? dict["fileName"] as? String
+        )
     }
 
     private func applyAgentStreamMessage(_ message: [String: Any], to task: AITask, isFinal: Bool) {
@@ -557,53 +589,146 @@ class ConversationVM {
         task.rounds.append(round)
     }
 
-    /// Merges artifact chunks without letting a later artifact wipe earlier ones.
-    /// - `append == true`: continue the current artifact stream
-    /// - `append == false` / nil with a new artifact id: keep previous text and start a new section
-    /// - `append == false` with the same artifact id: restart that artifact's buffer
+    /// Applies A2A artifact parts (text / data / raw / url) into structured result blocks.
+    /// Text may stream via `append`; other kinds are committed as discrete blocks in order.
+    private func applyArtifactParts(
+        _ parts: [Part],
+        to task: AITask,
+        artifactId: String?,
+        artifactName: String?,
+        append: Bool?,
+        lastChunk: Bool?
+    ) {
+        guard parts.contains(where: \.hasResultContent) else {
+            if lastChunk == true {
+                commitActiveArtifact(on: task)
+            }
+            return
+        }
+
+        let id = artifactId ?? "default"
+        prepareArtifactStream(on: task, artifactId: id, artifactName: artifactName, append: append)
+
+        for part in parts {
+            if let text = part.text, !text.isEmpty {
+                applyArtifactText(text, to: task, append: append)
+            }
+            if let data = part.data {
+                flushTextBuffer(on: task)
+                task.resultBlocks.append(
+                    .json(
+                        data.prettyPrinted,
+                        artifactId: id,
+                        artifactName: artifactName ?? task.activeArtifactName
+                    )
+                )
+            }
+            if let raw = part.raw, !raw.isEmpty {
+                flushTextBuffer(on: task)
+                task.resultBlocks.append(
+                    .file(
+                        Self.filePayload(base64: raw, mediaType: part.mediaType, filename: part.filename),
+                        artifactId: id,
+                        artifactName: artifactName ?? task.activeArtifactName
+                    )
+                )
+            }
+            if let url = part.url, !url.isEmpty {
+                flushTextBuffer(on: task)
+                task.resultBlocks.append(
+                    .link(
+                        .init(url: url, filename: part.filename, mediaType: part.mediaType),
+                        artifactId: id,
+                        artifactName: artifactName ?? task.activeArtifactName
+                    )
+                )
+            }
+        }
+
+        refreshSummary(for: task)
+
+        if lastChunk == true {
+            commitActiveArtifact(on: task)
+        }
+    }
+
+    private func prepareArtifactStream(
+        on task: AITask,
+        artifactId: String,
+        artifactName: String?,
+        append: Bool?
+    ) {
+        if append == true {
+            if task.activeArtifactId == nil {
+                task.activeArtifactId = artifactId
+                task.activeArtifactName = artifactName
+            }
+            return
+        }
+        if task.activeArtifactId == artifactId {
+            // Restart the current artifact's text buffer; keep prior committed blocks.
+            task.summaryBuffer = ""
+            task.activeArtifactName = artifactName ?? task.activeArtifactName
+            return
+        }
+        commitActiveArtifact(on: task)
+        task.activeArtifactId = artifactId
+        task.activeArtifactName = artifactName
+    }
+
+    /// Merges text chunks for the active artifact stream.
     private func applyArtifactText(
         _ text: String,
         to task: AITask,
-        artifactId: String?,
         append: Bool?
     ) {
-        let id = artifactId ?? "default"
-        if append == true {
-            if task.activeArtifactId == nil {
-                task.activeArtifactId = id
-            }
+        if append == true || !task.summaryBuffer.isEmpty {
             task.summaryBuffer += text
-        } else if task.activeArtifactId == id {
-            task.summaryBuffer = text
         } else {
-            commitActiveArtifact(on: task)
-            task.activeArtifactId = id
             task.summaryBuffer = text
         }
-        task.summary = combinedSummary(for: task)
     }
 
-    private func commitActiveArtifact(on task: AITask) {
+    private func flushTextBuffer(on task: AITask) {
         let chunk = task.summaryBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !chunk.isEmpty else {
-            task.activeArtifactId = nil
-            return
-        }
+        guard !chunk.isEmpty else { return }
+        task.resultBlocks.append(
+            .markdown(
+                chunk,
+                artifactId: task.activeArtifactId,
+                artifactName: task.activeArtifactName
+            )
+        )
         if task.committedSummary.isEmpty {
             task.committedSummary = chunk
         } else if !task.committedSummary.contains(chunk) {
             task.committedSummary += "\n\n---\n\n" + chunk
         }
         task.summaryBuffer = ""
+    }
+
+    private func commitActiveArtifact(on task: AITask) {
+        flushTextBuffer(on: task)
         task.activeArtifactId = nil
-        task.summary = combinedSummary(for: task)
+        task.activeArtifactName = nil
+        refreshSummary(for: task)
+    }
+
+    private func refreshSummary(for task: AITask) {
+        let live = task.summaryBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        var pieces = task.resultBlocks.map(\.summaryText)
+        if !live.isEmpty {
+            pieces.append(live)
+        }
+        let combined = pieces.joined(separator: "\n\n---\n\n")
+        task.summary = combined.isEmpty ? nil : combined
     }
 
     private func combinedSummary(for task: AITask) -> String {
         let live = task.summaryBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        if task.committedSummary.isEmpty { return live }
-        if live.isEmpty { return task.committedSummary }
-        return task.committedSummary + "\n\n---\n\n" + live
+        var pieces = task.resultBlocks.map(\.summaryText)
+        if !live.isEmpty { pieces.append(live) }
+        return pieces.joined(separator: "\n\n---\n\n")
     }
 
     private func promoteSummaryFromStreamBuffer(for task: AITask) {
@@ -618,6 +743,37 @@ class ConversationVM {
            last.reasoning == summary {
             task.rounds.removeLast()
         }
+    }
+
+    private static func filePayload(
+        base64: String,
+        mediaType: String?,
+        filename: String?
+    ) -> ResultBlock.FilePayload {
+        let data = Data(base64Encoded: base64)
+        let byteCount = data?.count ?? (base64.count * 3 / 4)
+        var preview: String?
+        let mime = (mediaType ?? "").lowercased()
+        let textLike = mime.hasPrefix("text/")
+            || mime == "application/json"
+            || mime == "application/csv"
+            || mime.hasSuffix("+json")
+            || (filename?.lowercased().hasSuffix(".csv") == true)
+        if textLike, let data, let text = String(data: data, encoding: .utf8) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.count > 4_000 {
+                preview = String(trimmed.prefix(4_000)) + "\n…"
+            } else {
+                preview = trimmed
+            }
+        }
+        return .init(
+            filename: filename,
+            mediaType: mediaType,
+            previewText: preview,
+            base64: base64,
+            byteCount: byteCount
+        )
     }
 
     private func appendProcessNote(to task: AITask, title: String, body: String) {

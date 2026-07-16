@@ -39,7 +39,7 @@ class MockAgentExecutor(AgentExecutor):
             task_id=task.id,
             context_id=task.context_id,
         )
-        # mock-react and mock-markdown-arch are routed inside MockAgent.run
+        # mock-react / mock-markdown-arch / mock-all-artifacts route inside MockAgent.run
         await self.agent.run(user_text, task_updater)
 
     async def cancel(

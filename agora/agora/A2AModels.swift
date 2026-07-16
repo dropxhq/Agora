@@ -22,53 +22,154 @@ struct ReActStep: Codable {
     let ok: Bool?
 }
 
-// Heterogeneous JSON value
-enum JSONValue: Codable {
-    case string(String), number(Double), bool(Bool), null
+// Heterogeneous JSON value (A2A data parts + tool args)
+enum JSONValue: Codable, Equatable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+    case object([String: JSONValue])
+    case array([JSONValue])
+
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
-        if let v = try? c.decode(String.self) { self = .string(v) }
-        else if let v = try? c.decode(Double.self) { self = .number(v) }
+        if c.decodeNil() { self = .null }
+        else if let v = try? c.decode(String.self) { self = .string(v) }
         else if let v = try? c.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? c.decode(Double.self) { self = .number(v) }
+        else if let v = try? c.decode([String: JSONValue].self) { self = .object(v) }
+        else if let v = try? c.decode([JSONValue].self) { self = .array(v) }
         else { self = .null }
     }
+
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
         switch self {
         case .string(let v): try c.encode(v)
         case .number(let v): try c.encode(v)
-        case .bool(let v):   try c.encode(v)
-        case .null:          try c.encodeNil()
+        case .bool(let v): try c.encode(v)
+        case .null: try c.encodeNil()
+        case .object(let v): try c.encode(v)
+        case .array(let v): try c.encode(v)
         }
     }
+
     var description: String {
         switch self {
         case .string(let v): return v
         case .number(let v): return String(v)
-        case .bool(let v):   return String(v)
-        case .null:          return "null"
+        case .bool(let v): return String(v)
+        case .null: return "null"
+        case .object(let v):
+            return "{" + v.map { "\($0.key): \($0.value.description)" }.joined(separator: ", ") + "}"
+        case .array(let v):
+            return "[" + v.map(\.description).joined(separator: ", ") + "]"
+        }
+    }
+
+    /// Pretty JSON for artifact data rendering.
+    var prettyPrinted: String {
+        let object = jsonObject
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(
+                withJSONObject: object,
+                options: [.prettyPrinted, .sortedKeys]
+              ),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return description
+        }
+        return text
+    }
+
+    var jsonObject: Any {
+        switch self {
+        case .string(let v): return v
+        case .number(let v): return v
+        case .bool(let v): return v
+        case .null: return NSNull()
+        case .object(let v): return v.mapValues(\.jsonObject)
+        case .array(let v): return v.map(\.jsonObject)
+        }
+    }
+
+    func decode<T: Decodable>(_ type: T.Type) -> T? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    static func fromJSONObject(_ value: Any) -> JSONValue {
+        switch value {
+        case let v as String: return .string(v)
+        case let v as Bool: return .bool(v)
+        case let v as Int: return .number(Double(v))
+        case let v as Double: return .number(v)
+        case let v as NSNumber:
+            // Bool is bridged as NSNumber; detect it first.
+            if CFGetTypeID(v) == CFBooleanGetTypeID() {
+                return .bool(v.boolValue)
+            }
+            return .number(v.doubleValue)
+        case let v as [String: Any]:
+            return .object(v.mapValues { fromJSONObject($0) })
+        case let v as [Any]:
+            return .array(v.map { fromJSONObject($0) })
+        case is NSNull:
+            return .null
+        default:
+            return .null
         }
     }
 }
 
 // MARK: - Message
 
+/// A2A 1.0 Part: content is one of text / data / raw / url.
 struct Part: Codable {
     let text: String?
-    let data: ReActStep?
+    let data: JSONValue?
+    let raw: String?
+    let url: String?
     let mediaType: String?
+    let filename: String?
 
-    init(text: String? = nil, data: ReActStep? = nil, mediaType: String? = nil) {
+    init(
+        text: String? = nil,
+        data: JSONValue? = nil,
+        raw: String? = nil,
+        url: String? = nil,
+        mediaType: String? = nil,
+        filename: String? = nil
+    ) {
         self.text = text
         self.data = data
+        self.raw = raw
+        self.url = url
         self.mediaType = mediaType
+        self.filename = filename
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         text = try container.decodeIfPresent(String.self, forKey: .text)
+        data = try container.decodeIfPresent(JSONValue.self, forKey: .data)
+        raw = try container.decodeIfPresent(String.self, forKey: .raw)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
         mediaType = try container.decodeIfPresent(String.self, forKey: .mediaType)
-        data = try? container.decode(ReActStep.self, forKey: .data)
+        filename = try container.decodeIfPresent(String.self, forKey: .filename)
+    }
+
+    /// Status DataPart carrying a ReAct step (`step` + `round`).
+    var reactStep: ReActStep? {
+        data?.decode(ReActStep.self)
+    }
+
+    var hasResultContent: Bool {
+        if let text, !text.isEmpty { return true }
+        if data != nil { return true }
+        if let raw, !raw.isEmpty { return true }
+        if let url, !url.isEmpty { return true }
+        return false
     }
 }
 
@@ -145,6 +246,109 @@ struct ToolResult: Identifiable {
     let ok: Bool
 }
 
+/// Renderable artifact content (A2A text / data / raw / url).
+struct ResultBlock: Identifiable, Codable, Equatable {
+    let id: UUID
+    var artifactId: String?
+    var artifactName: String?
+    var payload: Payload
+
+    enum Payload: Codable, Equatable {
+        case markdown(String)
+        case json(String)
+        case file(FilePayload)
+        case link(LinkPayload)
+    }
+
+    struct FilePayload: Codable, Equatable {
+        var filename: String?
+        var mediaType: String?
+        var previewText: String?
+        var base64: String?
+        var byteCount: Int
+
+        var isImage: Bool {
+            (mediaType ?? "").lowercased().hasPrefix("image/")
+        }
+
+        var isTextLike: Bool {
+            let mime = (mediaType ?? "").lowercased()
+            return mime.hasPrefix("text/")
+                || mime == "application/json"
+                || mime == "application/csv"
+                || mime.hasSuffix("+json")
+        }
+
+        var imageData: Data? {
+            guard isImage, let base64, !base64.isEmpty else { return nil }
+            return Data(base64Encoded: base64)
+        }
+    }
+
+    struct LinkPayload: Codable, Equatable {
+        var url: String
+        var filename: String?
+        var mediaType: String?
+
+        var isImage: Bool {
+            (mediaType ?? "").lowercased().hasPrefix("image/")
+        }
+    }
+
+    static func markdown(
+        _ text: String,
+        artifactId: String? = nil,
+        artifactName: String? = nil,
+        id: UUID = UUID()
+    ) -> ResultBlock {
+        ResultBlock(id: id, artifactId: artifactId, artifactName: artifactName, payload: .markdown(text))
+    }
+
+    static func json(
+        _ text: String,
+        artifactId: String? = nil,
+        artifactName: String? = nil
+    ) -> ResultBlock {
+        ResultBlock(id: UUID(), artifactId: artifactId, artifactName: artifactName, payload: .json(text))
+    }
+
+    static func file(
+        _ file: FilePayload,
+        artifactId: String? = nil,
+        artifactName: String? = nil
+    ) -> ResultBlock {
+        ResultBlock(id: UUID(), artifactId: artifactId, artifactName: artifactName, payload: .file(file))
+    }
+
+    static func link(
+        _ link: LinkPayload,
+        artifactId: String? = nil,
+        artifactName: String? = nil
+    ) -> ResultBlock {
+        ResultBlock(id: UUID(), artifactId: artifactId, artifactName: artifactName, payload: .link(link))
+    }
+
+    /// Flattened text used for legacy `summary` / persistence fallback.
+    var summaryText: String {
+        switch payload {
+        case .markdown(let text):
+            return text
+        case .json(let text):
+            return "```json\n\(text)\n```"
+        case .file(let file):
+            let name = file.filename ?? "file"
+            let mime = file.mediaType ?? "application/octet-stream"
+            if let preview = file.previewText, !preview.isEmpty {
+                return "**\(name)** (`\(mime)`)\n\n```\n\(preview)\n```"
+            }
+            return "**\(name)** (`\(mime)`, \(file.byteCount) bytes)"
+        case .link(let link):
+            let label = link.filename ?? link.url
+            return "[\(label)](\(link.url))"
+        }
+    }
+}
+
 @Observable
 class Round {
     var reasoning: String?
@@ -196,6 +400,8 @@ class AITask: Identifiable {
     var subtaskIndex: Int?
     var rounds: [Round] = []
     var summary: String? = nil
+    /// Structured artifact results (text / data / raw / url).
+    var resultBlocks: [ResultBlock] = []
     var state: TaskState = .working
     var errorMessage: String? = nil
     var skillId: String? = nil
@@ -204,12 +410,20 @@ class AITask: Identifiable {
 
     /// In-progress text for the active artifact stream.
     var summaryBuffer = ""
-    /// Already finished artifacts; kept so later artifacts do not overwrite earlier ones.
+    /// Already finished markdown artifacts (legacy string mirror of committed text blocks).
     var committedSummary = ""
     /// Artifact currently being streamed into `summaryBuffer`.
     var activeArtifactId: String?
+    var activeArtifactName: String?
 
     var isSubTask: Bool { parentTaskId != nil }
+
+    var hasResultContent: Bool {
+        if let summary, !summary.isEmpty { return true }
+        if !resultBlocks.isEmpty { return true }
+        if !summaryBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        return false
+    }
 
     init(
         id: String,
