@@ -351,15 +351,15 @@ class ConversationVM {
             let task = task(for: e.taskId)
             let text = e.artifact.parts.compactMap(\.text).joined()
             if !text.isEmpty {
-                if e.append == true {
-                    task.summaryBuffer += text
-                } else {
-                    task.summaryBuffer = text
-                }
-                // Show intermediate markdown drafts before lastChunk.
-                task.summary = task.summaryBuffer
+                applyArtifactText(
+                    text,
+                    to: task,
+                    artifactId: e.artifact.artifactId,
+                    append: e.append
+                )
             }
             if e.lastChunk == true {
+                commitActiveArtifact(on: task)
                 if orchestratesSubTasks, task.isSubTask {
                     task.state = .completed
                 }
@@ -485,13 +485,13 @@ class ConversationVM {
                let parts = artifact["parts"] as? [[String: Any]] {
                 let text = parts.compactMap { $0["text"] as? String }.joined()
                 if !text.isEmpty {
-                    let append = object["append"] as? Bool ?? true
-                    if append {
-                        task.summaryBuffer += text
-                    } else {
-                        task.summaryBuffer = text
+                    let artifactId = artifact["artifactId"] as? String
+                        ?? artifact["artifact_id"] as? String
+                    let append = object["append"] as? Bool
+                    applyArtifactText(text, to: task, artifactId: artifactId, append: append)
+                    if object["lastChunk"] as? Bool == true || object["last_chunk"] as? Bool == true {
+                        commitActiveArtifact(on: task)
                     }
-                    task.summary = task.summaryBuffer
                 }
             }
         default:
@@ -557,9 +557,60 @@ class ConversationVM {
         task.rounds.append(round)
     }
 
+    /// Merges artifact chunks without letting a later artifact wipe earlier ones.
+    /// - `append == true`: continue the current artifact stream
+    /// - `append == false` / nil with a new artifact id: keep previous text and start a new section
+    /// - `append == false` with the same artifact id: restart that artifact's buffer
+    private func applyArtifactText(
+        _ text: String,
+        to task: AITask,
+        artifactId: String?,
+        append: Bool?
+    ) {
+        let id = artifactId ?? "default"
+        if append == true {
+            if task.activeArtifactId == nil {
+                task.activeArtifactId = id
+            }
+            task.summaryBuffer += text
+        } else if task.activeArtifactId == id {
+            task.summaryBuffer = text
+        } else {
+            commitActiveArtifact(on: task)
+            task.activeArtifactId = id
+            task.summaryBuffer = text
+        }
+        task.summary = combinedSummary(for: task)
+    }
+
+    private func commitActiveArtifact(on task: AITask) {
+        let chunk = task.summaryBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !chunk.isEmpty else {
+            task.activeArtifactId = nil
+            return
+        }
+        if task.committedSummary.isEmpty {
+            task.committedSummary = chunk
+        } else if !task.committedSummary.contains(chunk) {
+            task.committedSummary += "\n\n---\n\n" + chunk
+        }
+        task.summaryBuffer = ""
+        task.activeArtifactId = nil
+        task.summary = combinedSummary(for: task)
+    }
+
+    private func combinedSummary(for task: AITask) -> String {
+        let live = task.summaryBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if task.committedSummary.isEmpty { return live }
+        if live.isEmpty { return task.committedSummary }
+        return task.committedSummary + "\n\n---\n\n" + live
+    }
+
     private func promoteSummaryFromStreamBuffer(for task: AITask) {
-        guard task.summary == nil, !task.summaryBuffer.isEmpty else { return }
-        let summary = task.summaryBuffer
+        commitActiveArtifact(on: task)
+        guard task.summary == nil || task.summary?.isEmpty == true else { return }
+        let summary = combinedSummary(for: task)
+        guard !summary.isEmpty else { return }
         task.summary = summary
         if let last = task.rounds.last,
            last.toolCalls.isEmpty,

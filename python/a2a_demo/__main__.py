@@ -51,7 +51,7 @@ def _build_skills() -> tuple[AgentSkill, AgentSkill, AgentSkill]:
         description=(
             "Rich ReAct demo: multiple tool calls per reasoning round, "
             "streams an intermediate Markdown architecture draft, "
-            "then replaces it with a final Markdown architecture document."
+            "then appends a final Markdown architecture document without overwriting the draft."
         ),
         input_modes=["text/plain"],
         output_modes=["text/markdown", "text/plain"],

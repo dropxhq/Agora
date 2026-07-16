@@ -202,7 +202,12 @@ class AITask: Identifiable {
     var skillName: String? = nil
     let createdAt: Date
 
+    /// In-progress text for the active artifact stream.
     var summaryBuffer = ""
+    /// Already finished artifacts; kept so later artifacts do not overwrite earlier ones.
+    var committedSummary = ""
+    /// Artifact currently being streamed into `summaryBuffer`.
+    var activeArtifactId: String?
 
     var isSubTask: Bool { parentTaskId != nil }
 

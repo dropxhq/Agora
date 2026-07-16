@@ -348,8 +348,8 @@ def _markdown_arch_final(topic: str) -> str:
 ### 3. Summary Surface
 
 - Artifact 以 Markdown 写入 `summary`
-- `append=false` 可替换中间稿；`append=true` 追加流式块
-- `MarkdownText` 使用 `AttributedString(... interpretedSyntax: .full)` 渲染标题/列表/表格
+- 不同 artifact 各自保留，互不覆盖；同 artifact 内 `append=true` 追加流式块
+- `MarkdownText`（MarkdownUI）渲染标题 / 列表 / 表格
 
 ## 关键时序
 
@@ -369,7 +369,7 @@ def _markdown_arch_final(topic: str) -> str:
 | --- | --- |
 | 过程事件 | `DataPart.step` + `round` |
 | 最终答案 | Text artifact + Markdown 渲染 |
-| 中间稿 | 先发草稿 artifact，再用最终稿替换 |
+| 中间稿 | 草稿与终稿为不同 artifact，客户端按序保留 |
 | Skill | `/mock-markdown-arch` 触发本流程 |
 
 ## 验收清单
@@ -426,23 +426,24 @@ async def emit_markdown_arch_task(
 
     await _emit_steps(updater, steps[:draft_index], step_delay=step_delay)
 
-    artifact_id = str(uuid.uuid4())
-    # Intermediate markdown architecture (replaceable draft).
+    draft_id = str(uuid.uuid4())
+    final_id = str(uuid.uuid4())
+    # Intermediate markdown architecture (kept separately from the final doc).
     await updater.add_artifact(
         [new_text_part(draft)],
-        artifact_id=artifact_id,
+        artifact_id=draft_id,
         name="architecture-draft",
         append=False,
-        last_chunk=False,
+        last_chunk=True,
     )
     await asyncio.sleep(artifact_delay)
 
     await _emit_steps(updater, steps[draft_index + 1 :], step_delay=step_delay)
 
-    # Final markdown architecture replaces the draft.
+    # Final markdown architecture is a new artifact; must not overwrite the draft.
     await updater.add_artifact(
         [new_text_part(final)],
-        artifact_id=artifact_id,
+        artifact_id=final_id,
         name="architecture",
         append=False,
         last_chunk=True,
