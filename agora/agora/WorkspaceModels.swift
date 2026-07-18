@@ -243,8 +243,6 @@ struct LegacyPersistedToolResult: Codable {
 struct PersistedTask: Codable, Identifiable {
     var id: String
     var prompt: String
-    var parentTaskId: String?
-    var subtaskIndex: Int?
     var skillId: String?
     var skillName: String?
     var thinking: [PersistedThinkingItem]?
@@ -261,7 +259,6 @@ struct SessionSnapshot: Codable {
     var tasks: [PersistedTask]?
     var selectedTaskId: String?
     var activeMainTaskId: String?
-    var selectedSubTaskId: String?
 
     // Legacy single-task fields (migration)
     var rounds: [PersistedRound]?

@@ -6,14 +6,10 @@ class ConversationVM {
     var tasks: [AITask] = []
     var selectedTaskId: String?
     var activeMainTaskId: String?
-    var selectedSubTaskId: String?
 
     private var pendingPrompt: String?
     private var streamingTaskId: String?
     private var streamTask: Task<Void, Never>?
-    private var orchestratesSubTasks = false
-    private var multiTaskServerId: String?
-    private var currentSubTaskId: String?
     private let decoder = JSONDecoder()
 
     var onChange: (() -> Void)?
@@ -25,54 +21,22 @@ class ConversationVM {
         return rootTasks.last
     }
 
-    var rootTasks: [AITask] {
-        tasks.filter { !$0.isSubTask }
-    }
+    var rootTasks: [AITask] { tasks }
 
-    var subTasks: [AITask] {
-        guard let main = mainTask else { return [] }
-        return subTasks(for: main.id)
-    }
-
-    func subTasks(for mainId: String) -> [AITask] {
-        tasks
-            .filter { $0.parentTaskId == mainId }
-            .sorted { ($0.subtaskIndex ?? Int.max) < ($1.subtaskIndex ?? Int.max) }
-    }
-
-    var hasSubTasks: Bool { !subTasks.isEmpty }
-
-    var displayTask: AITask? {
-        if hasSubTasks {
-            if let id = selectedSubTaskId {
-                return subTasks.first { $0.id == id }
-            }
-            return subTasks.first
-        }
-        return mainTask
-    }
+    var displayTask: AITask? { mainTask }
 
     var selectedTask: AITask? { displayTask }
 
     var thinking: [ThinkingItem] { displayTask?.thinking ?? [] }
     var summary: String? { displayTask?.summary }
-    var state: TaskState { displayTask?.state ?? mainTask?.state ?? .idle }
-    var errorMessage: String? { displayTask?.errorMessage ?? mainTask?.errorMessage }
+    var state: TaskState { displayTask?.state ?? .idle }
+    var errorMessage: String? { displayTask?.errorMessage }
 
     var isStreaming: Bool {
         tasks.contains { $0.state == .working }
     }
 
-    func selectSubTask(_ id: String) {
-        selectedSubTaskId = id
-        notifyChange()
-    }
-
     func selectTask(_ id: String) {
-        if subTasks.contains(where: { $0.id == id }) {
-            selectSubTask(id)
-            return
-        }
         selectedTaskId = id
         notifyChange()
     }
@@ -90,12 +54,8 @@ class ConversationVM {
         )
         tasks.append(task)
         activeMainTaskId = placeholderId
-        selectedSubTaskId = nil
         selectedTaskId = placeholderId
         streamingTaskId = placeholderId
-        orchestratesSubTasks = Self.isMultiTaskPrompt(text)
-        multiTaskServerId = nil
-        currentSubTaskId = nil
         pendingPrompt = text
         notifyChange()
 
@@ -107,9 +67,6 @@ class ConversationVM {
                 }
                 finalizeStreamingTaskIfNeeded()
                 pendingPrompt = nil
-                orchestratesSubTasks = false
-                multiTaskServerId = nil
-                currentSubTaskId = nil
             } catch is CancellationError {
                 markStreamingStopped()
             } catch {
@@ -135,13 +92,9 @@ class ConversationVM {
             } else {
                 task.state = .idle
             }
-            refreshMainTaskState(for: task.parentTaskId ?? task.id)
         }
         pendingPrompt = nil
         streamingTaskId = nil
-        orchestratesSubTasks = false
-        multiTaskServerId = nil
-        currentSubTaskId = nil
         notifyChange()
     }
 
@@ -151,8 +104,6 @@ class ConversationVM {
                 PersistedTask(
                     id: task.id,
                     prompt: task.prompt,
-                    parentTaskId: task.parentTaskId,
-                    subtaskIndex: task.subtaskIndex,
                     skillId: task.skillId,
                     skillName: task.skillName,
                     thinking: task.thinking.map(Self.persistThinkingItem),
@@ -165,8 +116,7 @@ class ConversationVM {
                 )
             },
             selectedTaskId: selectedTaskId,
-            activeMainTaskId: activeMainTaskId,
-            selectedSubTaskId: selectedSubTaskId
+            activeMainTaskId: activeMainTaskId
         )
     }
 
@@ -174,7 +124,6 @@ class ConversationVM {
         if let persistedTasks = snapshot.tasks, !persistedTasks.isEmpty {
             tasks = persistedTasks.map { restoreTask(from: $0) }
             activeMainTaskId = snapshot.activeMainTaskId ?? rootTasks.last?.id
-            selectedSubTaskId = snapshot.selectedSubTaskId
             selectedTaskId = snapshot.selectedTaskId
             return
         }
@@ -194,7 +143,6 @@ class ConversationVM {
         guard let legacyRounds = snapshot.rounds else {
             tasks = []
             activeMainTaskId = nil
-            selectedSubTaskId = nil
             selectedTaskId = nil
             return
         }
@@ -213,8 +161,6 @@ class ConversationVM {
         let task = AITask(
             id: persisted.id,
             prompt: persisted.prompt,
-            parentTaskId: persisted.parentTaskId,
-            subtaskIndex: persisted.subtaskIndex,
             state: TaskState.from(label: persisted.state),
             skillId: persisted.skillId,
             skillName: persisted.skillName,
@@ -355,7 +301,6 @@ class ConversationVM {
         if let taskId = streamingTaskId, let task = tasks.first(where: { $0.id == taskId }) {
             task.errorMessage = message
             task.state = .failed
-            refreshMainTaskState(for: task.parentTaskId ?? task.id)
         } else if let prompt = pendingPrompt {
             let task = AITask(id: UUID().uuidString, prompt: prompt, state: .failed)
             task.errorMessage = message
@@ -365,9 +310,6 @@ class ConversationVM {
         }
         pendingPrompt = nil
         streamingTaskId = nil
-        orchestratesSubTasks = false
-        multiTaskServerId = nil
-        currentSubTaskId = nil
         notifyChange()
     }
 
@@ -385,7 +327,6 @@ class ConversationVM {
             task.state = .failed
             task.errorMessage = task.errorMessage ?? "服务器未返回有效响应。"
         }
-        refreshMainTaskState(for: task.parentTaskId ?? task.id)
         streamingTaskId = nil
         notifyChange()
     }
@@ -407,14 +348,9 @@ class ConversationVM {
         }
 
         if let t = try? decoder.decode(A2ATask.self, from: payload) {
-            if orchestratesSubTasks {
-                multiTaskServerId = t.id
-                _ = ensureCurrentSubTask()
-            } else {
-                adoptServerTaskId(t.id)
-                if tasks.first(where: { $0.id == t.id }) == nil {
-                    _ = task(for: t.id)
-                }
+            adoptServerTaskId(t.id)
+            if tasks.first(where: { $0.id == t.id }) == nil {
+                _ = task(for: t.id)
             }
             updateTaskState(t.id, state: t.status.state)
             notifyChange()
@@ -452,19 +388,12 @@ class ConversationVM {
                 append: e.append,
                 lastChunk: e.lastChunk
             )
-                if e.lastChunk == true, orchestratesSubTasks, task.isSubTask {
-                task.state = .completed
-                if currentSubTaskId == task.id {
-                    currentSubTaskId = nil
-                }
-            }
             notifyChange()
             return
         }
     }
 
     private func adoptServerTaskId(_ serverId: String) {
-        guard !orchestratesSubTasks else { return }
         guard let mainId = activeMainTaskId,
               let task = tasks.first(where: { $0.id == mainId }) else { return }
         task.id = serverId
@@ -473,63 +402,7 @@ class ConversationVM {
         streamingTaskId = serverId
     }
 
-    private func ensureCurrentSubTask(prompt: String? = nil) -> AITask {
-        if let currentId = currentSubTaskId,
-           let task = tasks.first(where: { $0.id == currentId }) {
-            streamingTaskId = currentId
-            return task
-        }
-        return beginNextSubTask(prompt: prompt ?? "子任务 \(subTasks.count + 1)")
-    }
-
-    private func beginNextSubTask(prompt: String) -> AITask {
-        guard let mainId = activeMainTaskId else {
-            let fallback = AITask(id: UUID().uuidString, prompt: prompt, state: .working)
-            tasks.append(fallback)
-            return fallback
-        }
-
-        let index = subTasks.count + 1
-        let subId = "\(mainId)-sub-\(index)"
-        let sub = AITask(
-            id: subId,
-            prompt: prompt,
-            parentTaskId: mainId,
-            subtaskIndex: index,
-            state: .working
-        )
-        tasks.append(sub)
-        currentSubTaskId = subId
-        streamingTaskId = subId
-        selectedSubTaskId = subId
-        notifyChange()
-        return sub
-    }
-
     private func updateTaskState(_ taskId: String, state: String) {
-        if orchestratesSubTasks, taskId == multiTaskServerId {
-            if state.lowercased() == "failed" || state.lowercased() == "task_state_failed" {
-                for sub in subTasks { sub.state = .failed }
-                if let mainId = activeMainTaskId,
-                   let main = tasks.first(where: { $0.id == mainId }) {
-                    main.state = .failed
-                }
-            } else if TaskState.isTerminal(state) {
-                for sub in subTasks where sub.state == .working {
-                    sub.state = .completed
-                }
-                if let mainId = activeMainTaskId,
-                   let main = tasks.first(where: { $0.id == mainId }) {
-                    main.state = .completed
-                }
-            } else if let mainId = activeMainTaskId,
-                      let main = tasks.first(where: { $0.id == mainId }),
-                      main.state != .failed {
-                main.state = .working
-            }
-            return
-        }
-
         guard let task = tasks.first(where: { $0.id == taskId }) else { return }
         if state.lowercased() == "task_state_failed" || state.lowercased() == "failed" {
             task.state = .failed
@@ -537,11 +410,7 @@ class ConversationVM {
             task.state = .completed
         } else if task.state != .failed {
             task.state = .working
-            if task.isSubTask, selectedSubTaskId != taskId {
-                selectedSubTaskId = taskId
-            }
         }
-        refreshMainTaskState(for: task.parentTaskId ?? task.id)
     }
 
     @MainActor
@@ -653,9 +522,6 @@ class ConversationVM {
             if text.isEmpty {
                 appendThinkingFallback(from: step, to: task)
             } else {
-                if orchestratesSubTasks, task.isSubTask, task.thinking.isEmpty {
-                    task.prompt = text
-                }
                 task.thinking.append(.reasoning(text))
             }
         case "tool_call":
@@ -963,20 +829,6 @@ class ConversationVM {
         )
     }
 
-    private func refreshMainTaskState(for taskId: String) {
-        guard let main = tasks.first(where: { $0.id == taskId && !$0.isSubTask }) else { return }
-        let children = tasks.filter { $0.parentTaskId == taskId }
-        guard !children.isEmpty else { return }
-
-        if children.contains(where: { $0.state == .working }) {
-            main.state = .working
-        } else if children.allSatisfy({ $0.state == .completed }) {
-            main.state = .completed
-        } else if children.contains(where: { $0.state == .failed }) {
-            main.state = .failed
-        }
-    }
-
     private static func streamPayloadData(from data: Data) -> Data {
         guard
             let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -996,13 +848,6 @@ class ConversationVM {
     }
 
     private func task(for taskId: String) -> AITask {
-        if orchestratesSubTasks {
-            if multiTaskServerId == nil {
-                multiTaskServerId = taskId
-            }
-            return ensureCurrentSubTask()
-        }
-
         if let existing = tasks.first(where: { $0.id == taskId }) {
             streamingTaskId = taskId
             return existing
@@ -1015,11 +860,6 @@ class ConversationVM {
         selectedTaskId = taskId
         activeMainTaskId = taskId
         return task
-    }
-
-    static func isMultiTaskPrompt(_ text: String) -> Bool {
-        let lowered = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["multi task", "multi-task", "multitask", "多任务"].contains { lowered.contains($0) }
     }
 }
 

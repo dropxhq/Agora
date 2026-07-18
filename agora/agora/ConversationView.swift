@@ -7,7 +7,6 @@ struct ConversationView: View {
     var onEditBackend: () -> Void = {}
 
     @State private var input = ""
-    @State private var isTaskSidebarVisible = true
 
     private var vm: ConversationVM {
         store.vm(for: session.id)
@@ -20,53 +19,17 @@ struct ConversationView: View {
     var body: some View {
         @Bindable var vm = store.vm(for: session.id)
 
-        HStack(spacing: 0) {
-            conversationPanel(vm: vm)
-
-            if isTaskSidebarVisible && vm.hasSubTasks {
-                Divider()
-                TaskSidebarView(vm: vm) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isTaskSidebarVisible = false
-                    }
-                }
-                .transition(.move(edge: .trailing).combined(with: .opacity))
+        conversationPanel(vm: vm)
+            .navigationTitle(session.title)
+            .modifier(AgoraInlineNavigationTitleModifier())
+            .onAppear {
+                bindVM()
+                store.loadAgentCard(for: backend)
             }
-        }
-        .animation(.easeInOut(duration: 0.2), value: isTaskSidebarVisible)
-        .animation(.easeInOut(duration: 0.2), value: vm.hasSubTasks)
-        .navigationTitle(session.title)
-        .modifier(AgoraInlineNavigationTitleModifier())
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                if vm.hasSubTasks {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isTaskSidebarVisible.toggle()
-                        }
-                    } label: {
-                        Label("子任务", systemImage: "sidebar.right")
-                    }
-                    .help(isTaskSidebarVisible ? "收起子任务边栏" : "展开子任务边栏")
-                }
+            .onChange(of: session.id) { _, _ in
+                bindVM()
+                input = ""
             }
-        }
-        .onAppear {
-            bindVM()
-            store.loadAgentCard(for: backend)
-            if vm.hasSubTasks {
-                isTaskSidebarVisible = true
-            }
-        }
-        .onChange(of: vm.hasSubTasks) { _, hasSubTasks in
-            if hasSubTasks {
-                isTaskSidebarVisible = true
-            }
-        }
-        .onChange(of: session.id) { _, _ in
-            bindVM()
-            input = ""
-        }
     }
 
     private func conversationPanel(vm: ConversationVM) -> some View {
@@ -89,7 +52,6 @@ struct ConversationView: View {
                             ForEach(vm.rootTasks, id: \.id) { rootTask in
                                 TaskConversationBlock(
                                     rootTask: rootTask,
-                                    subTasks: vm.subTasks(for: rootTask.id),
                                     errorMessage: rootTask.id == vm.mainTask?.id ? vm.errorMessage : nil,
                                     onOpenSettings: onEditBackend
                                 )
@@ -102,9 +64,6 @@ struct ConversationView: View {
                     scrollToLatest(proxy: proxy, vm: vm)
                 }
                 .onChange(of: vm.thinking.count) { _, _ in
-                    scrollToLatest(proxy: proxy, vm: vm)
-                }
-                .onChange(of: vm.selectedSubTaskId) { _, _ in
                     scrollToLatest(proxy: proxy, vm: vm)
                 }
                 .onChange(of: vm.summary) { _, _ in
@@ -129,12 +88,7 @@ struct ConversationView: View {
 
     private func scrollToLatest(proxy: ScrollViewProxy, vm: ConversationVM) {
         guard let rootTask = vm.mainTask else { return }
-        let subs = vm.subTasks(for: rootTask.id)
-        if let subTask = subs.last {
-            proxy.scrollTo("subtask-\(subTask.id)", anchor: .bottom)
-        } else {
-            proxy.scrollTo("turn-\(rootTask.id)", anchor: .bottom)
-        }
+        proxy.scrollTo("turn-\(rootTask.id)", anchor: .bottom)
     }
 
     private func bindVM() {
@@ -172,34 +126,25 @@ struct ConversationView: View {
 
 struct TaskConversationBlock: View {
     let rootTask: AITask
-    let subTasks: [AITask]
     let errorMessage: String?
     var onOpenSettings: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            MainTaskHeader(task: rootTask, subTaskCount: subTasks.count)
+            MainTaskHeader(task: rootTask)
 
             if let errorMessage {
                 ConnectionErrorBanner(message: errorMessage, onOpenSettings: onOpenSettings)
             }
 
-            if subTasks.isEmpty {
-                TurnView(task: rootTask)
-                    .id("turn-\(rootTask.id)")
-            } else {
-                ForEach(subTasks) { subTask in
-                    SubTaskSection(task: subTask)
-                        .id("subtask-\(subTask.id)")
-                }
-            }
+            TurnView(task: rootTask)
+                .id("turn-\(rootTask.id)")
         }
     }
 }
 
 struct MainTaskHeader: View {
     let task: AITask
-    let subTaskCount: Int
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
@@ -211,12 +156,6 @@ struct MainTaskHeader: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            }
-
-            if subTaskCount > 0 {
-                Text("\(subTaskCount) 个子任务")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
 
             if let skillId = task.skillId {
@@ -241,21 +180,6 @@ struct MainTaskHeader: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-}
-
-struct SubTaskSection: View {
-    let task: AITask
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let index = task.subtaskIndex {
-                Text("子任务 \(index)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            TurnView(task: task)
-        }
     }
 }
 

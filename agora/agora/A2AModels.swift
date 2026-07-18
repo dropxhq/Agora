@@ -469,8 +469,6 @@ enum TaskState {
 class AITask: Identifiable {
     var id: String
     var prompt: String
-    var parentTaskId: String?
-    var subtaskIndex: Int?
     var thinking: [ThinkingItem] = []
     var summary: String? = nil
     /// Structured artifact results (text / data / raw / url).
@@ -489,8 +487,6 @@ class AITask: Identifiable {
     var activeArtifactId: String?
     var activeArtifactName: String?
 
-    var isSubTask: Bool { parentTaskId != nil }
-
     var hasResultContent: Bool {
         if let summary, !summary.isEmpty { return true }
         if !resultBlocks.isEmpty { return true }
@@ -503,8 +499,6 @@ class AITask: Identifiable {
     init(
         id: String,
         prompt: String,
-        parentTaskId: String? = nil,
-        subtaskIndex: Int? = nil,
         state: TaskState = .working,
         skillId: String? = nil,
         skillName: String? = nil,
@@ -512,22 +506,10 @@ class AITask: Identifiable {
     ) {
         self.id = id
         self.prompt = prompt
-        self.parentTaskId = parentTaskId
-        self.subtaskIndex = subtaskIndex
         self.state = state
         self.skillId = skillId
         self.skillName = skillName
         self.createdAt = createdAt
-    }
-
-    var promptPreview: String {
-        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count <= 28 { return trimmed }
-        return String(trimmed.prefix(28)) + "…"
-    }
-
-    var taskIdSuffix: String {
-        String(id.suffix(8))
     }
 }
 

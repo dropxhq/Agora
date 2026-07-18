@@ -7,7 +7,7 @@ from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 
-from a2a_demo.mock_flow import MockAgent, is_multi_task_demo, run_multi_task_demo
+from a2a_demo.mock_flow import MockAgent
 
 
 class MockAgentExecutor(AgentExecutor):
@@ -23,10 +23,6 @@ class MockAgentExecutor(AgentExecutor):
     ) -> None:
         message = context.message
         user_text = get_message_text(message) if message else "（空消息）"
-
-        if is_multi_task_demo(user_text):
-            await run_multi_task_demo(context, event_queue, user_text)
-            return
 
         if context.current_task:
             task = context.current_task
