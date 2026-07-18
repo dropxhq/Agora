@@ -79,8 +79,8 @@ private struct SubTaskRow: View {
                 Text(stateLabel)
                     .font(.caption2)
                     .foregroundStyle(stateColor)
-                if !task.rounds.isEmpty {
-                    Text("\(task.rounds.count) 轮")
+                if !task.thinking.isEmpty {
+                    Text("\(task.thinking.count) 步")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

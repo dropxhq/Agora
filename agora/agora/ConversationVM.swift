@@ -54,7 +54,7 @@ class ConversationVM {
 
     var selectedTask: AITask? { displayTask }
 
-    var rounds: [Round] { displayTask?.rounds ?? [] }
+    var thinking: [ThinkingItem] { displayTask?.thinking ?? [] }
     var summary: String? { displayTask?.summary }
     var state: TaskState { displayTask?.state ?? mainTask?.state ?? .idle }
     var errorMessage: String? { displayTask?.errorMessage ?? mainTask?.errorMessage }
@@ -130,7 +130,7 @@ class ConversationVM {
     private func markStreamingStopped() {
         for task in tasks where task.state == .working {
             promoteSummaryFromStreamBuffer(for: task)
-            if task.hasResultContent || !task.rounds.isEmpty {
+            if task.hasResultContent || !task.thinking.isEmpty {
                 task.state = .completed
             } else {
                 task.state = .idle
@@ -155,17 +155,8 @@ class ConversationVM {
                     subtaskIndex: task.subtaskIndex,
                     skillId: task.skillId,
                     skillName: task.skillName,
-                    rounds: task.rounds.map { round in
-                        PersistedRound(
-                            reasoning: round.reasoning,
-                            toolCalls: round.toolCalls.map {
-                                PersistedToolCall(name: $0.name, args: $0.args)
-                            },
-                            toolResults: round.toolResults.map {
-                                PersistedToolResult(name: $0.name, result: $0.result, ok: $0.ok)
-                            }
-                        )
-                    },
+                    thinking: task.thinking.map(Self.persistThinkingItem),
+                    rounds: nil,
                     summary: task.summary,
                     resultBlocks: task.resultBlocks,
                     state: task.state.label,
@@ -188,6 +179,18 @@ class ConversationVM {
             return
         }
 
+        if let thinking = snapshot.thinking {
+            let task = AITask(id: UUID().uuidString, prompt: "历史任务", state: .idle)
+            task.thinking = thinking.compactMap(Self.thinkingItem(from:))
+            applyLegacySummary(snapshot.summary, to: task)
+            task.state = TaskState.from(label: snapshot.state ?? "idle")
+            task.errorMessage = snapshot.errorMessage
+            tasks = [task]
+            activeMainTaskId = task.id
+            selectedTaskId = task.id
+            return
+        }
+
         guard let legacyRounds = snapshot.rounds else {
             tasks = []
             activeMainTaskId = nil
@@ -197,23 +200,8 @@ class ConversationVM {
         }
 
         let task = AITask(id: UUID().uuidString, prompt: "历史任务", state: .idle)
-        task.rounds = legacyRounds.map { persisted in
-            let round = Round()
-            round.reasoning = persisted.reasoning
-            round.toolCalls = persisted.toolCalls.map {
-                ToolCall(name: $0.name, args: $0.args)
-            }
-            round.toolResults = persisted.toolResults.map {
-                ToolResult(name: $0.name, result: $0.result, ok: $0.ok)
-            }
-            return round
-        }
-        task.summary = snapshot.summary
-        if let summary = snapshot.summary, !summary.isEmpty {
-            task.resultBlocks = [.markdown(summary)]
-            task.committedSummary = summary
-        }
-        task.summaryBuffer = ""
+        task.thinking = Self.flattenLegacyRounds(legacyRounds)
+        applyLegacySummary(snapshot.summary, to: task)
         task.state = TaskState.from(label: snapshot.state ?? "idle")
         task.errorMessage = snapshot.errorMessage
         tasks = [task]
@@ -232,31 +220,119 @@ class ConversationVM {
             skillName: persisted.skillName,
             createdAt: persisted.createdAt
         )
-        task.rounds = persisted.rounds.map { persistedRound in
-            let round = Round()
-            round.reasoning = persistedRound.reasoning
-            round.toolCalls = persistedRound.toolCalls.map {
-                ToolCall(name: $0.name, args: $0.args)
-            }
-            round.toolResults = persistedRound.toolResults.map {
-                ToolResult(name: $0.name, result: $0.result, ok: $0.ok)
-            }
-            return round
+        if let thinking = persisted.thinking, !thinking.isEmpty {
+            task.thinking = thinking.compactMap(Self.thinkingItem(from:))
+        } else if let rounds = persisted.rounds {
+            task.thinking = Self.flattenLegacyRounds(rounds)
         }
         task.summary = persisted.summary
         task.resultBlocks = persisted.resultBlocks ?? []
         if task.resultBlocks.isEmpty, let summary = persisted.summary, !summary.isEmpty {
             task.resultBlocks = [.markdown(summary)]
         }
+        if task.committedSummary.isEmpty {
+            task.committedSummary = task.resultBlocks
+                .compactMap {
+                    if case .markdown(let text) = $0.payload { return text }
+                    return nil
+                }
+                .joined(separator: "\n\n---\n\n")
+        }
         task.summaryBuffer = ""
-        task.committedSummary = task.resultBlocks
-            .compactMap {
-                if case .markdown(let text) = $0.payload { return text }
-                return nil
-            }
-            .joined(separator: "\n\n---\n\n")
         task.errorMessage = persisted.errorMessage
         return task
+    }
+
+    private func applyLegacySummary(_ summary: String?, to task: AITask) {
+        task.summary = summary
+        if let summary, !summary.isEmpty {
+            task.resultBlocks = [.markdown(summary)]
+            task.committedSummary = summary
+        }
+        task.summaryBuffer = ""
+    }
+
+    private static func persistThinkingItem(_ item: ThinkingItem) -> PersistedThinkingItem {
+        switch item {
+        case .reasoning(_, let text):
+            return PersistedThinkingItem(kind: "reasoning", text: text, toolCall: nil)
+        case .toolCall(let call):
+            let persistedResult = call.result.map {
+                PersistedToolResult(id: $0.id, tool: $0.tool.rawValue, result: $0.result, ok: $0.ok)
+            }
+            return PersistedThinkingItem(
+                kind: "tool_call",
+                text: nil,
+                toolCall: PersistedToolCall(
+                    id: call.callId,
+                    tool: call.tool.rawValue,
+                    desc: call.desc,
+                    args: call.args,
+                    result: persistedResult
+                )
+            )
+        }
+    }
+
+    private static func thinkingItem(from persisted: PersistedThinkingItem) -> ThinkingItem? {
+        switch persisted.kind {
+        case "reasoning":
+            guard let text = persisted.text, !text.isEmpty else { return nil }
+            return .reasoning(text)
+        case "tool_call":
+            guard let call = persisted.toolCall else { return nil }
+            let result = call.result.map {
+                ToolResult(id: $0.id, tool: ToolKind(wire: $0.tool), result: $0.result, ok: $0.ok)
+            }
+            return .toolCall(
+                ToolCall(
+                    callId: call.id,
+                    tool: ToolKind(wire: call.tool),
+                    desc: call.desc,
+                    args: call.args,
+                    result: result
+                )
+            )
+        default:
+            return nil
+        }
+    }
+
+    /// Flatten legacy rounds; drop old `name` (no mapping to `tool`).
+    private static func flattenLegacyRounds(_ rounds: [PersistedRound]) -> [ThinkingItem] {
+        var items: [ThinkingItem] = []
+        for round in rounds {
+            if let reasoning = round.reasoning, !reasoning.isEmpty {
+                items.append(.reasoning(reasoning))
+            }
+            let callCount = round.toolCalls.count
+            let resultCount = round.toolResults.count
+            let pairCount = max(callCount, resultCount)
+            for i in 0..<pairCount {
+                let legacyCall = i < callCount ? round.toolCalls[i] : nil
+                let legacyResult = i < resultCount ? round.toolResults[i] : nil
+                let result = legacyResult.map {
+                    ToolResult(
+                        id: nil,
+                        tool: .unknown,
+                        result: $0.result ?? "",
+                        ok: $0.ok ?? true
+                    )
+                }
+                items.append(
+                    .toolCall(
+                        ToolCall(
+                            callId: nil,
+                            tool: .unknown,
+                            desc: nil,
+                            args: legacyCall?.args ?? [:],
+                            result: result
+                        )
+                    )
+                )
+            }
+        }
+        return items
     }
 
     private func notifyChange() {
@@ -356,12 +432,7 @@ class ConversationVM {
         if let e = try? decoder.decode(TaskStatusUpdateEvent.self, from: payload) {
             let task = task(for: e.taskId)
             if let msg = e.status.message {
-                applyAgentStreamMessage(Self.messageObject(from: msg), to: task, isFinal: TaskState.isTerminal(e.status.state))
-                for part in msg.parts {
-                    if let step = part.reactStep {
-                        upsertRound(step, in: task)
-                    }
-                }
+                applyStatusMessage(Self.messageObject(from: msg), to: task)
             }
             updateTaskState(e.taskId, state: e.status.state)
             if e.status.state.lowercased() == "task_state_failed" || e.status.state.lowercased() == "failed" {
@@ -381,8 +452,11 @@ class ConversationVM {
                 append: e.append,
                 lastChunk: e.lastChunk
             )
-            if e.lastChunk == true, orchestratesSubTasks, task.isSubTask {
+                if e.lastChunk == true, orchestratesSubTasks, task.isSubTask {
                 task.state = .completed
+                if currentSubTaskId == task.id {
+                    currentSubTaskId = nil
+                }
             }
             notifyChange()
             return
@@ -487,13 +561,16 @@ class ConversationVM {
             }
         case "status-update":
             let task = task(for: taskId)
-            let isFinal = object["final"] as? Bool ?? false
+            var isFinal = object["final"] as? Bool ?? false
             if let status = object["status"] as? [String: Any] {
-                if let message = status["message"] as? [String: Any] {
-                    applyAgentStreamMessage(message, to: task, isFinal: isFinal)
-                }
                 if let state = status["state"] as? String {
                     updateTaskState(taskId, state: state)
+                    if TaskState.isTerminal(state) {
+                        isFinal = true
+                    }
+                }
+                if let message = status["message"] as? [String: Any] {
+                    applyStatusMessage(message, to: task)
                 }
             }
             if isFinal {
@@ -556,61 +633,153 @@ class ConversationVM {
         ]
     }
 
-    private func applyAgentStreamMessage(_ message: [String: Any], to task: AITask, isFinal: Bool) {
+    /// Status message → thinking only (never result / summaryBuffer).
+    private func applyStatusMessage(_ message: [String: Any], to task: AITask) {
         guard let parts = message["parts"] as? [[String: Any]] else { return }
-
-        for part in parts {
-            if let text = part["text"] as? String, !text.isEmpty {
-                if isFinal {
-                    task.summaryBuffer = text
-                    task.summary = text
-                } else {
-                    appendStreamText(to: task, content: text)
-                    task.summaryBuffer = text
-                }
+        for partDict in parts {
+            let part = Self.part(from: partDict)
+            if let step = part.reactStep {
+                applyProcessStep(step, to: task)
                 continue
             }
-
-            guard let data = part["data"] as? [String: Any],
-                  let messageType = data["message_type"] as? String else {
-                continue
-            }
-
-            switch messageType {
-            case "initial":
-                let title = data["title"] as? String ?? ""
-                let desc = data["desc"] as? String ?? ""
-                appendProcessNote(to: task, title: title, body: desc)
-            case "execute":
-                let name = data["execute_type"] as? String ?? "execute"
-                let content = data["content"] as? String ?? ""
-                appendExecuteStep(to: task, name: name, content: content)
-            case "text":
-                let content = data["content"] as? String ?? ""
-                guard !content.isEmpty else { continue }
-                if isFinal {
-                    task.summaryBuffer = content
-                    task.summary = content
-                } else {
-                    appendStreamText(to: task, content: content)
-                    task.summaryBuffer = content
-                }
-            case "error":
-                let content = data["content"] as? String ?? data["data"] as? String ?? "未知错误"
-                task.errorMessage = content
-                task.state = .failed
-            case "completed":
-                break
-            default:
-                break
-            }
+            appendThinkingFallback(from: partDict, part: part, to: task)
         }
     }
 
-    private func appendStreamText(to task: AITask, content: String) {
-        let round = Round()
-        round.reasoning = content
-        task.rounds.append(round)
+    private func applyProcessStep(_ step: ReActStep, to task: AITask) {
+        switch step.type {
+        case "reasoning":
+            let text = step.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if text.isEmpty {
+                appendThinkingFallback(from: step, to: task)
+            } else {
+                if orchestratesSubTasks, task.isSubTask, task.thinking.isEmpty {
+                    task.prompt = text
+                }
+                task.thinking.append(.reasoning(text))
+            }
+        case "tool_call":
+            guard let toolWire = step.tool, !toolWire.isEmpty else {
+                appendThinkingFallback(from: step, to: task)
+                return
+            }
+            task.thinking.append(
+                .toolCall(
+                    ToolCall(
+                        callId: step.id,
+                        tool: ToolKind(wire: toolWire),
+                        desc: step.desc,
+                        args: step.args ?? [:]
+                    )
+                )
+            )
+        case "tool_result":
+            guard let toolWire = step.tool, !toolWire.isEmpty else {
+                appendThinkingFallback(from: step, to: task)
+                return
+            }
+            attachToolResult(
+                ToolResult(
+                    id: step.id,
+                    tool: ToolKind(wire: toolWire),
+                    result: step.result ?? "",
+                    ok: step.ok ?? true
+                ),
+                to: task
+            )
+        default:
+            appendThinkingFallback(from: step, to: task)
+        }
+    }
+
+    private func attachToolResult(_ result: ToolResult, to task: AITask) {
+        if let callId = result.id, !callId.isEmpty {
+            if let index = task.thinking.firstIndex(where: {
+                if case .toolCall(let call) = $0 {
+                    return call.callId == callId && call.result == nil
+                }
+                return false
+            }), case .toolCall(var call) = task.thinking[index] {
+                call.result = result
+                task.thinking[index] = .toolCall(call)
+                return
+            }
+        } else if let index = task.thinking.firstIndex(where: {
+            if case .toolCall(let call) = $0 {
+                return (call.callId == nil || call.callId?.isEmpty == true) && call.result == nil
+            }
+            return false
+        }), case .toolCall(var call) = task.thinking[index] {
+            call.result = result
+            task.thinking[index] = .toolCall(call)
+            return
+        }
+
+        // No matching call — keep content as a placeholder tool row.
+        task.thinking.append(
+            .toolCall(
+                ToolCall(
+                    callId: result.id,
+                    tool: result.tool,
+                    desc: nil,
+                    args: [:],
+                    result: result
+                )
+            )
+        )
+    }
+
+    private func appendThinkingFallback(from partDict: [String: Any], part: Part, to task: AITask) {
+        if let text = part.text, !text.isEmpty {
+            task.thinking.append(.reasoning(text))
+            return
+        }
+        if let data = partDict["data"] as? [String: Any] {
+            if let content = data["content"] as? String, !content.isEmpty {
+                task.thinking.append(.reasoning(content))
+                return
+            }
+            if let text = data["text"] as? String, !text.isEmpty {
+                task.thinking.append(.reasoning(text))
+                return
+            }
+            if let title = data["title"] as? String {
+                let desc = data["desc"] as? String ?? ""
+                let body = [title, desc].filter { !$0.isEmpty }.joined(separator: "\n")
+                if !body.isEmpty {
+                    task.thinking.append(.reasoning(body))
+                    return
+                }
+            }
+            if let dataValue = part.data {
+                task.thinking.append(.reasoning("```json\n\(dataValue.prettyPrinted)\n```"))
+                return
+            }
+        }
+        if let dataValue = part.data {
+            task.thinking.append(.reasoning("```json\n\(dataValue.prettyPrinted)\n```"))
+        }
+    }
+
+    private func appendThinkingFallback(from step: ReActStep, to task: AITask) {
+        if let text = step.text, !text.isEmpty {
+            task.thinking.append(.reasoning(text))
+            return
+        }
+        if let result = step.result, !result.isEmpty {
+            task.thinking.append(.reasoning(result))
+            return
+        }
+        var object: [String: Any] = ["type": step.type]
+        if let id = step.id { object["id"] = id }
+        if let tool = step.tool { object["tool"] = tool }
+        if let desc = step.desc { object["desc"] = desc }
+        if let args = step.args {
+            object["args"] = args.mapValues(\.jsonObject)
+        }
+        if let ok = step.ok { object["ok"] = ok }
+        let value = JSONValue.fromJSONObject(object)
+        task.thinking.append(.reasoning("```json\n\(value.prettyPrinted)\n```"))
     }
 
     /// Applies A2A artifact parts (text / data / raw / url) into structured result blocks.
@@ -761,12 +930,6 @@ class ConversationVM {
         let summary = combinedSummary(for: task)
         guard !summary.isEmpty else { return }
         task.summary = summary
-        if let last = task.rounds.last,
-           last.toolCalls.isEmpty,
-           last.toolResults.isEmpty,
-           last.reasoning == summary {
-            task.rounds.removeLast()
-        }
     }
 
     private static func filePayload(
@@ -798,23 +961,6 @@ class ConversationVM {
             base64: base64,
             byteCount: byteCount
         )
-    }
-
-    private func appendProcessNote(to task: AITask, title: String, body: String) {
-        let round = Round()
-        round.reasoning = [title, body]
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-        task.rounds.append(round)
-    }
-
-    private func appendExecuteStep(to task: AITask, name: String, content: String) {
-        let round = Round()
-        if !content.isEmpty {
-            round.reasoning = content
-        }
-        round.toolCalls.append(ToolCall(name: name, args: [:]))
-        task.rounds.append(round)
     }
 
     private func refreshMainTaskState(for taskId: String) {
@@ -869,43 +1015,6 @@ class ConversationVM {
         selectedTaskId = taskId
         activeMainTaskId = taskId
         return task
-    }
-
-    private func upsertRound(_ step: ReActStep, in task: AITask) {
-        if step.step == "task_start" {
-            guard let text = step.text, !text.isEmpty else { return }
-            if orchestratesSubTasks {
-                if task.rounds.isEmpty && task.summary == nil {
-                    task.prompt = text
-                } else {
-                    _ = beginNextSubTask(prompt: text)
-                }
-            } else {
-                task.prompt = text
-            }
-            return
-        }
-
-        let idx = step.round - 1
-        guard idx >= 0 else { return }
-        while task.rounds.count <= idx { task.rounds.append(Round()) }
-        switch step.step {
-        case "reasoning":
-            task.rounds[idx].reasoning = step.text
-        case "tool_call":
-            task.rounds[idx].toolCalls.append(ToolCall(
-                name: step.name ?? "",
-                args: step.args ?? [:]
-            ))
-        case "tool_result":
-            task.rounds[idx].toolResults.append(ToolResult(
-                name: step.name ?? "",
-                result: step.result ?? "",
-                ok: step.ok ?? true
-            ))
-        default:
-            break
-        }
     }
 
     static func isMultiTaskPrompt(_ text: String) -> Bool {

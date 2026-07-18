@@ -25,7 +25,10 @@ def _build_skills() -> tuple[AgentSkill, AgentSkill, AgentSkill, AgentSkill]:
     mock_react = AgentSkill(
         id="mock-react",
         name="Mock ReAct",
-        description="Returns simulated reasoning, tool calls, and summary.",
+        description=(
+            "Returns simulated reasoning / tool_call / tool_result (status), "
+            "then a streamed summary artifact."
+        ),
         input_modes=["text/plain"],
         output_modes=["text/plain"],
         tags=["a2a", "mock", "react"],
@@ -49,7 +52,7 @@ def _build_skills() -> tuple[AgentSkill, AgentSkill, AgentSkill, AgentSkill]:
         id="mock-markdown-arch",
         name="Markdown Architecture",
         description=(
-            "Rich ReAct demo: multiple tool calls per reasoning round, "
+            "Thinking demo covering shell/web_search/read/write/load_skill, "
             "streams an intermediate Markdown architecture draft, "
             "then appends a final Markdown architecture document without overwriting the draft."
         ),

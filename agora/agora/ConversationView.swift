@@ -101,7 +101,7 @@ struct ConversationView: View {
                 .onChange(of: vm.rootTasks.count) { _, _ in
                     scrollToLatest(proxy: proxy, vm: vm)
                 }
-                .onChange(of: vm.rounds.count) { _, _ in
+                .onChange(of: vm.thinking.count) { _, _ in
                     scrollToLatest(proxy: proxy, vm: vm)
                 }
                 .onChange(of: vm.selectedSubTaskId) { _, _ in
@@ -265,15 +265,15 @@ struct TurnView: View {
     @State private var expandGeneration = 0
 
     private var hasProcess: Bool {
-        !task.rounds.isEmpty
+        task.hasThinking
     }
 
     private var processLabel: String {
         if task.state == .working {
             return "处理中..."
         }
-        let stepCount = max(task.rounds.count, 1)
-        return "已完成 \(stepCount) 步骤"
+        let stepCount = max(task.thinking.count, 1)
+        return "已完成 \(stepCount) 步"
     }
 
     var body: some View {
@@ -301,9 +301,9 @@ struct TurnView: View {
                 .buttonStyle(.plain)
 
                 if expanded {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(task.rounds.indices, id: \.self) { i in
-                            RoundView(round: task.rounds[i], expandGeneration: expandGeneration)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(task.thinking) { item in
+                            ThinkingItemView(item: item, expandGeneration: expandGeneration)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -330,6 +330,115 @@ struct TurnView: View {
     }
 }
 
+struct ThinkingItemView: View {
+    let item: ThinkingItem
+    var expandGeneration: Int = 0
+
+    var body: some View {
+        switch item {
+        case .reasoning(_, let text):
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "brain.head.profile")
+                    .font(.caption)
+                    .frame(width: 14, alignment: .center)
+                    .padding(.top, 2)
+                MarkdownText(content: text)
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(.secondary)
+        case .toolCall(let call):
+            ToolCallRow(call: call, expandGeneration: expandGeneration)
+        }
+    }
+}
+
+private struct ToolCallRow: View {
+    let call: ToolCall
+    var expandGeneration: Int = 0
+    @State private var detailsExpanded = false
+
+    private var hasDetails: Bool {
+        call.result != nil || !call.args.isEmpty || !(call.desc?.isEmpty ?? true)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                guard hasDetails else { return }
+                withAnimation(.snappy(duration: 0.2)) {
+                    detailsExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: call.tool.systemImage)
+                        .font(.caption)
+                        .frame(width: 14, alignment: .center)
+                    Text(call.tool.displayName)
+                        .font(.caption.monospaced())
+                    if let desc = call.desc, !desc.isEmpty, !detailsExpanded {
+                        Text("· \(desc)")
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundStyle(.tertiary)
+                    }
+                    if hasDetails {
+                        Image(systemName: detailsExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasDetails)
+
+            if detailsExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let desc = call.desc, !desc.isEmpty {
+                        Text(desc)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if !call.args.isEmpty {
+                        Text(call.argsPreview)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let result = call.result {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: result.ok ? "tray" : "exclamationmark.triangle")
+                                .font(.caption)
+                                .frame(width: 14, alignment: .center)
+                                .padding(.top, 1)
+                            Text(result.result)
+                                .font(.caption)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .foregroundStyle(result.ok ? Color.secondary : Color.red)
+                    }
+                }
+                .padding(.leading, 20)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: expandGeneration) { _, _ in
+            if hasDetails {
+                detailsExpanded = true
+            }
+        }
+        .onAppear {
+            if expandGeneration > 0, hasDetails {
+                detailsExpanded = true
+            }
+        }
+    }
+}
+
 struct ConnectionErrorBanner: View {
     let message: String
     let onOpenSettings: () -> Void
@@ -348,164 +457,6 @@ struct ConnectionErrorBanner: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-struct RoundView: View {
-    let round: Round
-    var expandGeneration: Int = 0
-    @State private var toolsExpanded = false
-
-    private var hasTools: Bool {
-        !round.toolCalls.isEmpty || !round.toolResults.isEmpty
-    }
-
-    private var toolPairs: [(call: ToolCall?, result: ToolResult?)] {
-        let count = max(round.toolCalls.count, round.toolResults.count)
-        return (0..<count).map { i in
-            (
-                i < round.toolCalls.count ? round.toolCalls[i] : nil,
-                i < round.toolResults.count ? round.toolResults[i] : nil
-            )
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let r = round.reasoning {
-                reasoningRow(r)
-            }
-
-            if shouldShowTools {
-                toolsSection
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: expandGeneration) { _, _ in
-            toolsExpanded = true
-        }
-        .onAppear {
-            if expandGeneration > 0 {
-                toolsExpanded = true
-            }
-        }
-    }
-
-    private var shouldShowTools: Bool {
-        guard hasTools else { return false }
-        // 无 reasoning 时直接展示工具；有 reasoning 时由 > 控制，默认收起
-        return round.reasoning == nil || toolsExpanded
-    }
-
-    private func reasoningRow(_ text: String) -> some View {
-        Button {
-            guard hasTools else { return }
-            withAnimation(.snappy(duration: 0.2)) {
-                toolsExpanded.toggle()
-            }
-        } label: {
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "brain.head.profile")
-                    .font(.caption)
-                    .frame(width: 14, alignment: .center)
-                    .padding(.top, 2)
-
-                reasoningLabel(text)
-                    .font(.subheadline)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .foregroundStyle(.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func reasoningLabel(_ text: String) -> Text {
-        let body = Text(text)
-        guard hasTools else { return body }
-        let chevron = Text(Image(systemName: toolsExpanded ? "chevron.down" : "chevron.right"))
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.tertiary)
-        return body + Text(" ") + chevron
-    }
-
-    private var toolsSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(toolPairs.enumerated()), id: \.offset) { _, pair in
-                ToolCallResultRow(
-                    call: pair.call,
-                    result: pair.result,
-                    expandGeneration: expandGeneration
-                )
-            }
-        }
-        .padding(.leading, 20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct ToolCallResultRow: View {
-    let call: ToolCall?
-    let result: ToolResult?
-    var expandGeneration: Int = 0
-    @State private var resultExpanded = false
-
-    private var hasResult: Bool { result != nil }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let call {
-                Button {
-                    guard hasResult else { return }
-                    withAnimation(.snappy(duration: 0.2)) {
-                        resultExpanded.toggle()
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "wrench")
-                            .font(.caption)
-                            .frame(width: 14, alignment: .center)
-                        Text(call.name)
-                            .font(.caption)
-                        if hasResult {
-                            Image(systemName: resultExpanded ? "chevron.down" : "chevron.right")
-                                .font(.caption2.weight(.semibold))
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!hasResult)
-            }
-
-            if let result, call == nil || resultExpanded {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "tray")
-                        .font(.caption)
-                        .frame(width: 14, alignment: .center)
-                        .padding(.top, 1)
-                    Text(result.result)
-                        .font(.caption)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: expandGeneration) { _, _ in
-            if hasResult {
-                resultExpanded = true
-            }
-        }
-        .onAppear {
-            if expandGeneration > 0, hasResult {
-                resultExpanded = true
-            }
-        }
     }
 }
 

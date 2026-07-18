@@ -13,10 +13,11 @@ struct DataPart: Codable {
 }
 
 struct ReActStep: Codable {
-    let step: String        // "reasoning" | "tool_call" | "tool_result"
-    let round: Int
+    let type: String        // "reasoning" | "tool_call" | "tool_result"
     let text: String?
-    let name: String?
+    let id: String?
+    let tool: String?
+    let desc: String?
     let args: [String: JSONValue]?
     let result: String?
     let ok: Bool?
@@ -159,7 +160,7 @@ struct Part: Codable {
         filename = try container.decodeIfPresent(String.self, forKey: .filename)
     }
 
-    /// Status DataPart carrying a ReAct step (`step` + `round`).
+    /// Status DataPart carrying a process event (`type` = reasoning / tool_call / tool_result).
     var reactStep: ReActStep? {
         data?.decode(ReActStep.self)
     }
@@ -232,18 +233,96 @@ struct TaskArtifactUpdateEvent: Codable {
 
 // MARK: - Client Models
 
-struct ToolCall: Identifiable {
-    let id = UUID()
-    let name: String
-    let args: [String: JSONValue]
-    var argsPreview: String { args.map { "\($0.key): \($0.value.description)" }.joined(separator: ", ") }
+enum ToolKind: String, Codable, Equatable {
+    case shell
+    case webSearch = "web_search"
+    case read
+    case write
+    case loadSkill = "load_skill"
+    case unknown = "unknown"
+
+    init(wire: String?) {
+        guard let wire, let known = ToolKind(rawValue: wire) else {
+            self = .unknown
+            return
+        }
+        self = known
+    }
+
+    var displayName: String {
+        switch self {
+        case .shell: return "shell"
+        case .webSearch: return "web_search"
+        case .read: return "read"
+        case .write: return "write"
+        case .loadSkill: return "load_skill"
+        case .unknown: return "tool"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .shell: return "terminal"
+        case .webSearch: return "globe"
+        case .read: return "doc.text"
+        case .write: return "square.and.pencil"
+        case .loadSkill: return "puzzlepiece.extension"
+        case .unknown: return "wrench"
+        }
+    }
 }
 
-struct ToolResult: Identifiable {
-    let id = UUID()
-    let name: String
-    let result: String
-    let ok: Bool
+struct ToolResult: Equatable {
+    var id: String?
+    var tool: ToolKind
+    var result: String
+    var ok: Bool
+}
+
+struct ToolCall: Equatable {
+    let itemId: UUID
+    /// Wire `id` used to pair with `tool_result`; nil → sequential pairing.
+    var callId: String?
+    var tool: ToolKind
+    var desc: String?
+    var args: [String: JSONValue]
+    var result: ToolResult?
+
+    init(
+        itemId: UUID = UUID(),
+        callId: String? = nil,
+        tool: ToolKind,
+        desc: String? = nil,
+        args: [String: JSONValue] = [:],
+        result: ToolResult? = nil
+    ) {
+        self.itemId = itemId
+        self.callId = callId
+        self.tool = tool
+        self.desc = desc
+        self.args = args
+        self.result = result
+    }
+
+    var argsPreview: String {
+        args.map { "\($0.key): \($0.value.description)" }.joined(separator: ", ")
+    }
+}
+
+enum ThinkingItem: Identifiable, Equatable {
+    case reasoning(id: UUID, text: String)
+    case toolCall(ToolCall)
+
+    var id: UUID {
+        switch self {
+        case .reasoning(let id, _): return id
+        case .toolCall(let call): return call.itemId
+        }
+    }
+
+    static func reasoning(_ text: String) -> ThinkingItem {
+        .reasoning(id: UUID(), text: text)
+    }
 }
 
 /// Renderable artifact content (A2A text / data / raw / url).
@@ -349,14 +428,8 @@ struct ResultBlock: Identifiable, Codable, Equatable {
     }
 }
 
-@Observable
-class Round {
-    var reasoning: String?
-    var toolCalls: [ToolCall] = []
-    var toolResults: [ToolResult] = []
-}
-
-enum TaskState { case idle, working, completed, failed
+enum TaskState {
+    case idle, working, completed, failed
 
     static func from(label: String) -> TaskState {
         switch label.lowercased() {
@@ -398,7 +471,7 @@ class AITask: Identifiable {
     var prompt: String
     var parentTaskId: String?
     var subtaskIndex: Int?
-    var rounds: [Round] = []
+    var thinking: [ThinkingItem] = []
     var summary: String? = nil
     /// Structured artifact results (text / data / raw / url).
     var resultBlocks: [ResultBlock] = []
@@ -424,6 +497,8 @@ class AITask: Identifiable {
         if !summaryBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
         return false
     }
+
+    var hasThinking: Bool { !thinking.isEmpty }
 
     init(
         id: String,

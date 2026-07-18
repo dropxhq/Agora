@@ -108,34 +108,67 @@ def _parse_subtasks(user_text: str) -> list[str]:
     return [remainder, *DEFAULT_SUBTASKS[1:]]
 
 
+def _reasoning(text: str) -> dict[str, Any]:
+    return {"type": "reasoning", "text": text}
+
+
+def _tool_call(
+    call_id: str,
+    tool: str,
+    desc: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "type": "tool_call",
+        "id": call_id,
+        "tool": tool,
+        "desc": desc,
+        "args": args,
+    }
+
+
+def _tool_result(
+    call_id: str,
+    tool: str,
+    result: str,
+    *,
+    ok: bool = True,
+) -> dict[str, Any]:
+    return {
+        "type": "tool_result",
+        "id": call_id,
+        "tool": tool,
+        "result": result,
+        "ok": ok,
+    }
+
+
+def _marker(name: str) -> dict[str, Any]:
+    """Internal emit marker; never sent to clients."""
+    return {"type": name}
+
+
 def _mock_steps(user_text: str, *, subtask_index: Optional[int] = None) -> list[dict[str, Any]]:
     query = user_text.strip() or "示例问题"
     prefix = f"子任务 {subtask_index}：" if subtask_index is not None else ""
+    search_id = f"tc_search_{subtask_index or 0}"
     return [
-        {"step": "task_start", "round": 0, "text": query},
-        {
-            "step": "reasoning",
-            "round": 1,
-            "text": f"{prefix}用户想了解「{query}」。我先检索相关信息，再整理成简明回答。",
-        },
-        {
-            "step": "tool_call",
-            "round": 1,
-            "name": "web_search",
-            "args": {"query": query, "limit": 3},
-        },
-        {
-            "step": "tool_result",
-            "round": 1,
-            "name": "web_search",
-            "result": f"找到 3 条与「{query}」相关的模拟结果。",
-            "ok": True,
-        },
-        {
-            "step": "reasoning",
-            "round": 2,
-            "text": f"{prefix}检索结果足够，接下来生成总结。",
-        },
+        _reasoning(
+            f"{prefix}## 理解问题\n\n用户想了解 **「{query}」**。"
+            f"我先检索相关信息，再整理成简明回答。"
+        ),
+        _tool_call(
+            search_id,
+            "web_search",
+            f"检索「{query}」的背景资料",
+            {"query": query, "limit": 3},
+        ),
+        _tool_result(
+            search_id,
+            "web_search",
+            f"找到 3 条与「{query}」相关的模拟结果。",
+        ),
+        _reasoning(f"{prefix}检索结果足够，接下来生成总结。"),
     ]
 
 
@@ -165,143 +198,109 @@ def _markdown_arch_topic(user_text: str) -> str:
 
 
 def _markdown_arch_steps(topic: str) -> list[dict[str, Any]]:
-    """Multi-tool rounds used before/after intermediate architecture drafts."""
+    """Multi-tool flow covering all ToolKind values before/after draft artifact."""
     return [
-        {"step": "task_start", "round": 0, "text": f"生成「{topic}」架构文档"},
-        {
-            "step": "reasoning",
-            "round": 1,
-            "text": (
-                f"先摸清「{topic}」的边界与约束。本轮会并行做检索、组件盘点，"
-                "并核对现有接口约定。"
-            ),
-        },
-        {
-            "step": "tool_call",
-            "round": 1,
-            "name": "web_search",
-            "args": {"query": f"{topic} architecture overview", "limit": 5},
-        },
-        {
-            "step": "tool_result",
-            "round": 1,
-            "name": "web_search",
-            "result": f"检索到 5 篇与「{topic}」相关的架构综述。",
-            "ok": True,
-        },
-        {
-            "step": "tool_call",
-            "round": 1,
-            "name": "codebase_scan",
-            "args": {"path": "agora/", "focus": ["A2AClient", "ConversationVM"]},
-        },
-        {
-            "step": "tool_result",
-            "round": 1,
-            "name": "codebase_scan",
-            "result": "识别模块：Transport / Session / UI Lane / Summary Renderer。",
-            "ok": True,
-        },
-        {
-            "step": "tool_call",
-            "round": 1,
-            "name": "api_catalog",
-            "args": {"protocol": "A2A", "version": "1.0"},
-        },
-        {
-            "step": "tool_result",
-            "round": 1,
-            "name": "api_catalog",
-            "result": "已列出 message/stream、task/get、agent-card 三类接口。",
-            "ok": True,
-        },
-        {
-            "step": "reasoning",
-            "round": 2,
-            "text": (
-                "第一轮材料足够画出草图。再补一层数据流与依赖检查，"
-                "然后输出中间版 Markdown 架构文档。"
-            ),
-        },
-        {
-            "step": "tool_call",
-            "round": 2,
-            "name": "dependency_graph",
-            "args": {"roots": ["SwiftUI", "UniFFI", "a2a-demo"]},
-        },
-        {
-            "step": "tool_result",
-            "round": 2,
-            "name": "dependency_graph",
-            "result": "SwiftUI → ConversationVM → A2AClient → Rust UniFFI → Demo Server。",
-            "ok": True,
-        },
-        {
-            "step": "tool_call",
-            "round": 2,
-            "name": "trace_sample",
-            "args": {"scenario": "mock-react", "rounds": 2},
-        },
-        {
-            "step": "tool_result",
-            "round": 2,
-            "name": "trace_sample",
-            "result": "样本链路：reasoning → tool_call/result ×N → artifact(markdown)。",
-            "ok": True,
-        },
-        # Marker consumed by emit_markdown_arch_task to insert draft artifact.
-        {"step": "__emit_draft__", "round": 2},
-        {
-            "step": "reasoning",
-            "round": 3,
-            "text": (
-                "中间稿已发出。继续核实风险与扩展点，再输出最终版 Markdown 架构文档。"
-            ),
-        },
-        {
-            "step": "tool_call",
-            "round": 3,
-            "name": "risk_checklist",
-            "args": {"items": ["streaming cancel", "markdown tables", "skill routing"]},
-        },
-        {
-            "step": "tool_result",
-            "round": 3,
-            "name": "risk_checklist",
-            "result": "风险项已标注：流取消、表格渲染、slash skill 路由。",
-            "ok": True,
-        },
-        {
-            "step": "tool_call",
-            "round": 3,
-            "name": "diagram_render",
-            "args": {"format": "mermaid", "views": ["context", "container"]},
-        },
-        {
-            "step": "tool_result",
-            "round": 3,
-            "name": "diagram_render",
-            "result": "已生成 context / container 两层示意图（文本形式）。",
-            "ok": True,
-        },
-        {
-            "step": "tool_call",
-            "round": 3,
-            "name": "doc_lint",
-            "args": {"checks": ["heading hierarchy", "table syntax", "link targets"]},
-        },
-        {
-            "step": "tool_result",
-            "round": 3,
-            "name": "doc_lint",
-            "result": "文档 lint 通过：标题层级与表格语法可用。",
-            "ok": True,
-        },
-        {
-            "step": "reasoning",
-            "round": 4,
-            "text": "终检完成，准备发布最终 Markdown 架构文档。",
-        },
+        _reasoning(
+            f"## 边界摸底\n\n先摸清 **「{topic}」** 的边界与约束。"
+            f"本轮会并行做检索、读代码、加载 Skill。"
+        ),
+        _tool_call(
+            "arch_search",
+            "web_search",
+            "检索架构综述与最佳实践",
+            {"query": f"{topic} architecture overview", "limit": 5},
+        ),
+        _tool_result(
+            "arch_search",
+            "web_search",
+            f"检索到 5 篇与「{topic}」相关的架构综述。",
+        ),
+        _tool_call(
+            "arch_read",
+            "read",
+            "阅读客户端核心模块源码",
+            {"path": "agora/agora/ConversationVM.swift"},
+        ),
+        _tool_result(
+            "arch_read",
+            "read",
+            "识别模块：Transport / Session / Thinking Lane / Result Renderer。",
+        ),
+        _tool_call(
+            "arch_skill",
+            "load_skill",
+            "加载架构文档写作 Skill",
+            {"skill": "architecture-doc", "version": "1.0"},
+        ),
+        _tool_result(
+            "arch_skill",
+            "load_skill",
+            "已加载 Skill：标题层级、表格、时序图模板。",
+        ),
+        _reasoning(
+            "第一轮材料足够画出草图。再补一层 shell 探查与依赖检查，"
+            "然后输出中间版 Markdown 架构文档。"
+        ),
+        _tool_call(
+            "arch_shell",
+            "shell",
+            "列出工程目录结构",
+            {"command": "ls agora/agora | head -20"},
+        ),
+        _tool_result(
+            "arch_shell",
+            "shell",
+            "ConversationVM.swift\nA2AClient.swift\nConversationView.swift\n…",
+        ),
+        _tool_call(
+            "arch_write_notes",
+            "write",
+            "写下中间稿提纲到工作区",
+            {"path": "/tmp/arch-outline.md", "content": f"# {topic} outline"},
+        ),
+        _tool_result(
+            "arch_write_notes",
+            "write",
+            "已写入 /tmp/arch-outline.md。",
+        ),
+        _marker("__emit_draft__"),
+        _reasoning(
+            "## 终稿准备\n\n中间稿已发出。继续核实风险与扩展点，再输出最终版 Markdown 架构文档。"
+        ),
+        _tool_call(
+            "arch_read_risk",
+            "read",
+            "核对风险清单文件",
+            {"path": "docs/risks.md"},
+        ),
+        _tool_result(
+            "arch_read_risk",
+            "read",
+            "风险项已标注：流取消、表格渲染、slash skill 路由。",
+        ),
+        _tool_call(
+            "arch_write_final",
+            "write",
+            "写出终稿草案",
+            {"path": "/tmp/arch-final.md", "format": "markdown"},
+        ),
+        _tool_result(
+            "arch_write_final",
+            "write",
+            "终稿草案已落盘。",
+        ),
+        _tool_call(
+            "arch_shell_lint",
+            "shell",
+            "对文档做简易 lint",
+            {"command": "wc -l /tmp/arch-final.md"},
+        ),
+        _tool_result(
+            "arch_shell_lint",
+            "shell",
+            "文档 lint 通过：行数与标题层级可用。",
+        ),
+        _reasoning("终检完成，准备发布最终 Markdown 架构文档。"),
     ]
 
 
@@ -322,7 +321,7 @@ def _markdown_arch_draft(topic: str) -> str:
 
 | 层级 | 组件 | 职责 |
 | --- | --- | --- |
-| UI | ConversationView | 展示过程泳道与总结 |
+| UI | ConversationView | 展示思考过程与结果 |
 | State | ConversationVM | 归约 stream 事件 |
 | Transport | A2AClient / UniFFI | JSON-RPC + SSE |
 | Mock | a2a-demo | 输出模拟 ReAct / Markdown |
@@ -333,7 +332,7 @@ def _markdown_arch_draft(topic: str) -> str:
 User → InputBar → ConversationVM.send
                  → A2AClient.stream
                  → status(DataPart) / artifact(TextPart)
-                 → rounds + summary(Markdown)
+                 → thinking + resultBlocks(Markdown)
 ```
 
 ## 待补充
@@ -349,7 +348,7 @@ def _markdown_arch_final(topic: str) -> str:
 
 ## 一句话定义
 
-`{topic}` 采用 **A2A Streaming + ReAct Lane + Markdown Summary** 的三层结构：过程走 status，结论走 artifact。
+`{topic}` 采用 **A2A Streaming + Thinking Lane + Markdown Result** 的三层结构：过程走 status，结论走 artifact。
 
 ## 系统上下文
 
@@ -367,17 +366,17 @@ def _markdown_arch_final(topic: str) -> str:
 - `ConversationView`：消息区 + 输入栏
 - `GlassInputBar`：发送、停止、Skill（含 `/new`）
 
-### 2. Execution Lane
+### 2. Thinking Lane
 
-每个 round：
+扁平 thinking 列表：
 
-1. **reasoning**（可展开）
-2. 多个 **tool_call**
-3. 对应 **tool_result**（嵌套在 call 下）
+1. **reasoning**（Markdown）
+2. **tool_call**（`tool` + `desc` + `id`）
+3. 对应 **tool_result**（按 `id` 挂到 call）
 
-### 3. Summary Surface
+### 3. Result Surface
 
-- Artifact 以 Markdown 写入 `summary`
+- Artifact 以 Markdown 写入 `resultBlocks`
 - 不同 artifact 各自保留，互不覆盖；同 artifact 内 `append=true` 追加流式块
 - `MarkdownText`（MarkdownUI）渲染标题 / 列表 / 表格
 
@@ -386,7 +385,7 @@ def _markdown_arch_final(topic: str) -> str:
 ```text
 1) message/stream
 2) status: reasoning
-3) status: tool_call / tool_result (×N)
+3) status: tool_call / tool_result (×N, paired by id)
 4) artifact: markdown draft (中间稿)
 5) status: more tools
 6) artifact: markdown final (最终版, lastChunk)
@@ -397,14 +396,15 @@ def _markdown_arch_final(topic: str) -> str:
 
 | 主题 | 决策 |
 | --- | --- |
-| 过程事件 | `DataPart.step` + `round` |
+| 过程事件 | `DataPart.type`（reasoning / tool_call / tool_result） |
+| 工具类型 | `tool`: shell / web_search / read / write / load_skill |
 | 最终答案 | Text artifact + Markdown 渲染 |
 | 中间稿 | 草稿与终稿为不同 artifact，客户端按序保留 |
 | Skill | `/mock-markdown-arch` 触发本流程 |
 
 ## 验收清单
 
-- [x] 单 round 多 tool call/result
+- [x] 多 tool call/result（按 id 配对）
 - [x] 中间返回 Markdown 架构稿
 - [x] 最终返回 Markdown 架构终稿
 - [x] Agora 侧可折叠展示工具链
@@ -422,7 +422,7 @@ async def _emit_steps(
     step_delay: float,
 ) -> None:
     for step in steps:
-        if step.get("step") in {"__emit_draft__", "__emit_artifacts__"}:
+        if step.get("type") in {"__emit_draft__", "__emit_artifacts__"}:
             continue
         message = updater.new_agent_message(
             [new_data_part(step, media_type="application/json")]
@@ -443,110 +443,73 @@ def _all_artifacts_topic(user_text: str) -> str:
 
 
 def _all_artifacts_steps(topic: str) -> list[dict[str, Any]]:
-    """ReAct rounds around a mid-stream emission of every A2A Part kind."""
+    """Thinking steps around a mid-stream emission of every A2A Part kind."""
     return [
-        {"step": "task_start", "round": 0, "text": f"演示「{topic}」全部 artifact 类型"},
-        {
-            "step": "reasoning",
-            "round": 1,
-            "text": (
-                f"目标是把 A2A 1.0 可能的 Part 形态都作为独立 artifact 发出："
-                f"text / data / raw(file bytes) / url(file uri)。先核对协议字段。"
-            ),
-        },
-        {
-            "step": "tool_call",
-            "round": 1,
-            "name": "protocol_lookup",
-            "args": {"spec": "A2A", "version": "1.0", "focus": "Part oneof"},
-        },
-        {
-            "step": "tool_result",
-            "round": 1,
-            "name": "protocol_lookup",
-            "result": "Part content: text | data | raw | url；可附带 mediaType / filename。",
-            "ok": True,
-        },
-        {
-            "step": "tool_call",
-            "round": 1,
-            "name": "sample_fixture",
-            "args": {
-                "kinds": ["text", "data", "raw", "url"],
-                "include_binary": True,
-            },
-        },
-        {
-            "step": "tool_result",
-            "round": 1,
-            "name": "sample_fixture",
-            "result": "已准备 Markdown、JSON、PNG bytes、远程 URL 四类样例。",
-            "ok": True,
-        },
-        {
-            "step": "reasoning",
-            "round": 2,
-            "text": "材料齐了。先发出中间批次的全类型 artifact，再做一次校验并给出终稿说明。",
-        },
-        {
-            "step": "tool_call",
-            "round": 2,
-            "name": "payload_pack",
-            "args": {"topic": topic, "bundle": "mid-stream-artifacts"},
-        },
-        {
-            "step": "tool_result",
-            "round": 2,
-            "name": "payload_pack",
-            "result": "中间批次打包完成：4 个独立 artifact + 1 个混合 parts artifact。",
-            "ok": True,
-        },
-        # Marker consumed by emit_all_artifacts_task.
-        {"step": "__emit_artifacts__", "round": 2},
-        {
-            "step": "reasoning",
-            "round": 3,
-            "text": "中间 artifact 已发出。再核对客户端是否能按 artifactId 保留各类型，并输出终稿索引。",
-        },
-        {
-            "step": "tool_call",
-            "round": 3,
-            "name": "client_compat_check",
-            "args": {
-                "expects": [
-                    "text summary markdown",
-                    "data structured json",
-                    "raw file bytes",
-                    "url file reference",
-                    "mixed multi-part",
-                ]
-            },
-        },
-        {
-            "step": "tool_result",
-            "round": 3,
-            "name": "client_compat_check",
-            "result": "协议侧字段齐全；客户端可按需扩展非 text 渲染。",
-            "ok": True,
-        },
-        {
-            "step": "tool_call",
-            "round": 3,
-            "name": "doc_index",
-            "args": {"format": "markdown", "sections": ["catalog", "wire format"]},
-        },
-        {
-            "step": "tool_result",
-            "round": 3,
-            "name": "doc_index",
-            "result": "终稿索引已生成。",
-            "ok": True,
-        },
-        {
-            "step": "reasoning",
-            "round": 4,
-            "text": "校验完成，发布最终 Markdown 目录。",
-        },
+        _reasoning(
+            f"## 目标\n\n把 A2A 1.0 可能的 Part 形态都作为独立 artifact 发出："
+            f"**text / data / raw / url**。先核对协议字段。"
+        ),
+        _tool_call(
+            "art_skill",
+            "load_skill",
+            "加载 artifact 演示 Skill",
+            {"skill": "mock-all-artifacts"},
+        ),
+        _tool_result(
+            "art_skill",
+            "load_skill",
+            "Part content: text | data | raw | url；可附带 mediaType / filename。",
+        ),
+        _tool_call(
+            "art_read",
+            "read",
+            "读取样例 fixture 清单",
+            {"path": "fixtures/artifacts.json"},
+        ),
+        _tool_result(
+            "art_read",
+            "read",
+            "已准备 Markdown、JSON、PNG bytes、远程 URL 四类样例。",
+        ),
+        _reasoning("材料齐了。先发出中间批次的全类型 artifact，再做一次校验并给出终稿说明。"),
+        _tool_call(
+            "art_write",
+            "write",
+            "打包中间批次描述文件",
+            {"path": "/tmp/artifact-bundle.json", "topic": topic},
+        ),
+        _tool_result(
+            "art_write",
+            "write",
+            "中间批次打包完成：4 个独立 artifact + 1 个混合 parts artifact。",
+        ),
+        _marker("__emit_artifacts__"),
+        _reasoning(
+            "中间 artifact 已发出。再核对客户端是否能按 artifactId 保留各类型，并输出终稿索引。"
+        ),
+        _tool_call(
+            "art_shell",
+            "shell",
+            "检查客户端兼容清单",
+            {"command": "echo ok"},
+        ),
+        _tool_result(
+            "art_shell",
+            "shell",
+            "协议侧字段齐全；客户端可按需扩展非 text 渲染。",
+        ),
+        _tool_call(
+            "art_search",
+            "web_search",
+            "检索 A2A Part 渲染参考",
+            {"query": "A2A artifact parts rendering", "limit": 3},
+        ),
+        _tool_result(
+            "art_search",
+            "web_search",
+            "终稿索引参考已收集。",
+        ),
+        _reasoning("校验完成，发布最终 Markdown 目录。"),
     ]
 
 
@@ -772,7 +735,7 @@ async def emit_all_artifacts_task(
     await asyncio.sleep(0.3)
 
     emit_index = next(
-        (i for i, step in enumerate(steps) if step.get("step") == "__emit_artifacts__"),
+        (i for i, step in enumerate(steps) if step.get("type") == "__emit_artifacts__"),
         len(steps),
     )
 
@@ -807,7 +770,7 @@ async def emit_markdown_arch_task(
     await asyncio.sleep(0.3)
 
     draft_index = next(
-        (i for i, step in enumerate(steps) if step.get("step") == "__emit_draft__"),
+        (i for i, step in enumerate(steps) if step.get("type") == "__emit_draft__"),
         len(steps),
     )
 

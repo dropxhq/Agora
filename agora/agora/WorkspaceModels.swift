@@ -201,21 +201,43 @@ struct Session: Identifiable, Codable, Hashable {
     }
 }
 
-struct PersistedToolCall: Codable {
-    var name: String
-    var args: [String: JSONValue]
-}
-
 struct PersistedToolResult: Codable {
-    var name: String
+    var id: String?
+    var tool: String
     var result: String
     var ok: Bool
 }
 
+struct PersistedToolCall: Codable {
+    var id: String?
+    var tool: String
+    var desc: String?
+    var args: [String: JSONValue]
+    var result: PersistedToolResult?
+}
+
+struct PersistedThinkingItem: Codable {
+    var kind: String // "reasoning" | "tool_call"
+    var text: String?
+    var toolCall: PersistedToolCall?
+}
+
+/// Legacy persisted round shape (migration only).
 struct PersistedRound: Codable {
     var reasoning: String?
-    var toolCalls: [PersistedToolCall]
-    var toolResults: [PersistedToolResult]
+    var toolCalls: [LegacyPersistedToolCall]
+    var toolResults: [LegacyPersistedToolResult]
+}
+
+struct LegacyPersistedToolCall: Codable {
+    var name: String?
+    var args: [String: JSONValue]?
+}
+
+struct LegacyPersistedToolResult: Codable {
+    var name: String?
+    var result: String?
+    var ok: Bool?
 }
 
 struct PersistedTask: Codable, Identifiable {
@@ -225,7 +247,9 @@ struct PersistedTask: Codable, Identifiable {
     var subtaskIndex: Int?
     var skillId: String?
     var skillName: String?
-    var rounds: [PersistedRound]
+    var thinking: [PersistedThinkingItem]?
+    /// Legacy field — flattened into `thinking` on restore.
+    var rounds: [PersistedRound]?
     var summary: String?
     var resultBlocks: [ResultBlock]?
     var state: String
@@ -241,6 +265,7 @@ struct SessionSnapshot: Codable {
 
     // Legacy single-task fields (migration)
     var rounds: [PersistedRound]?
+    var thinking: [PersistedThinkingItem]?
     var summary: String?
     var state: String?
     var errorMessage: String?
