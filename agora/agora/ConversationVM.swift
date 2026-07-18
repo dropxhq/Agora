@@ -345,9 +345,18 @@ class ConversationVM {
             return
         }
 
+        if let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+           object["taskId"] as? String != nil || object["task_id"] as? String != nil,
+           object["status"] as? [String: Any] != nil {
+            // A2A 1.0 peels to `{ taskId, status, ... }` without a `kind` discriminator.
+            applyStreamKindEvent(object, kind: "status-update")
+            return
+        }
+
         if let e = try? decoder.decode(TaskStatusUpdateEvent.self, from: payload) {
             let task = task(for: e.taskId)
             if let msg = e.status.message {
+                applyAgentStreamMessage(Self.messageObject(from: msg), to: task, isFinal: TaskState.isTerminal(e.status.state))
                 for part in msg.parts {
                     if let step = part.reactStep {
                         upsertRound(step, in: task)
@@ -530,6 +539,21 @@ class ConversationVM {
             mediaType: dict["mediaType"] as? String ?? dict["media_type"] as? String,
             filename: dict["filename"] as? String ?? dict["fileName"] as? String
         )
+    }
+
+    private static func messageObject(from message: Message) -> [String: Any] {
+        [
+            "parts": message.parts.map { part -> [String: Any] in
+                var dict: [String: Any] = [:]
+                if let text = part.text { dict["text"] = text }
+                if let data = part.data { dict["data"] = data.jsonObject }
+                if let raw = part.raw { dict["raw"] = raw }
+                if let url = part.url { dict["url"] = url }
+                if let mediaType = part.mediaType { dict["mediaType"] = mediaType }
+                if let filename = part.filename { dict["filename"] = filename }
+                return dict
+            }
+        ]
     }
 
     private func applyAgentStreamMessage(_ message: [String: Any], to task: AITask, isFinal: Bool) {
@@ -913,7 +937,8 @@ enum ConnectionErrorMessage {
                 lines.append("连接失败。")
             }
         } else {
-            lines.append("连接失败。")
+            let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            lines.append(detail.isEmpty ? "连接失败。" : "连接失败：\(detail)")
         }
 
         lines.append("请确认后端已启动，并在设置中检查 Server URL（当前：\(serverURL.absoluteString)）。")

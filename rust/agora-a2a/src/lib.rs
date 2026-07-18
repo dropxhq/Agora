@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use a2a::event::StreamResponse;
-use a2a::{GetTaskRequest, Message, Part, Role, SendMessageRequest, A2AError as ProtocolError};
+use a2a::{
+    GetTaskRequest, Message, Part, Role, SendMessageRequest, A2AError as ProtocolError,
+    SVC_PARAM_VERSION, VERSION as A2A_PROTOCOL_VERSION,
+};
 use a2a_client::agent_card::AgentCardResolver;
 use a2a_client::client::A2AClient as RustA2AClient;
 use a2a_client::factory::A2AClientFactory;
@@ -86,6 +89,8 @@ struct SessionInner {
     message_metadata: Option<HashMap<String, Value>>,
     client: Mutex<Option<Arc<DynClient>>>,
     card_json: Mutex<Option<String>>,
+    /// Negotiated `A2A-Version` value sent on every SDK call.
+    protocol_version: Mutex<Option<String>>,
 }
 
 #[derive(uniffi::Object)]
@@ -109,6 +114,7 @@ impl A2aSession {
                 message_metadata,
                 client: Mutex::new(None),
                 card_json: Mutex::new(None),
+                protocol_version: Mutex::new(None),
             }),
         })
     }
@@ -239,14 +245,18 @@ async fn ensure_client(inner: &SessionInner) -> Result<(Arc<DynClient>, String),
 
     let http = a2a_client::default_reqwest_client(None).map_err(A2aError::from)?;
     let resolver = AgentCardResolver::new(Some(http));
-    let card = resolver.resolve(&inner.base_url).await?;
+    let mut card = resolver.resolve(&inner.base_url).await?;
+    // Remote cards often advertise localhost endpoints; rewrite to the host we actually used.
+    rewrite_card_localhost(&mut card, &inner.base_url)?;
+
+    let card_version = protocol_version_from_card(&card);
+    let protocol_version = negotiate_a2a_version(&card_version);
     let card_json = serde_json::to_string(&card)?;
 
+    let headers = effective_request_headers(&inner.request_headers, &protocol_version);
     let mut builder = A2AClientFactory::builder();
-    if !inner.request_headers.is_empty() {
-        builder = builder.with_interceptor(Arc::new(MultiHeaderInterceptor {
-            headers: inner.request_headers.clone(),
-        }));
+    if !headers.is_empty() {
+        builder = builder.with_interceptor(Arc::new(MultiHeaderInterceptor { headers }));
     }
 
     let factory = builder.build();
@@ -254,7 +264,106 @@ async fn ensure_client(inner: &SessionInner) -> Result<(Arc<DynClient>, String),
 
     *inner.client.lock().unwrap() = Some(client.clone());
     *inner.card_json.lock().unwrap() = Some(card_json.clone());
+    *inner.protocol_version.lock().unwrap() = Some(protocol_version);
     Ok((client, card_json))
+}
+
+fn protocol_version_from_card(card: &a2a::AgentCard) -> String {
+    card.supported_interfaces
+        .iter()
+        .find(|iface| iface.protocol_binding.eq_ignore_ascii_case("JSONRPC"))
+        .or_else(|| card.supported_interfaces.first())
+        .map(|iface| iface.protocol_version.clone())
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| A2A_PROTOCOL_VERSION.to_string())
+}
+
+/// `a2a-client` speaks A2A 1.0. Prefer the card's v1+ version; otherwise use the SDK version.
+fn negotiate_a2a_version(card_version: &str) -> String {
+    let normalized = normalize_a2a_version(card_version);
+    if is_a2a_v1(&normalized) {
+        normalized
+    } else {
+        A2A_PROTOCOL_VERSION.to_string()
+    }
+}
+
+/// Merge user headers with `A2A-Version` (spec: 1.0 clients MUST send it).
+fn effective_request_headers(
+    user_headers: &HashMap<String, String>,
+    protocol_version: &str,
+) -> HashMap<String, String> {
+    let mut headers = user_headers.clone();
+    let has_version = headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case(SVC_PARAM_VERSION));
+    if !has_version {
+        headers.insert(
+            SVC_PARAM_VERSION.to_string(),
+            normalize_a2a_version(protocol_version),
+        );
+    }
+    headers
+}
+
+fn normalize_a2a_version(version: &str) -> String {
+    let trimmed = version.trim();
+    if trimmed.is_empty() {
+        return A2A_PROTOCOL_VERSION.to_string();
+    }
+    // Agent cards / clients use Major.Minor (ignore patch if present).
+    let mut parts = trimmed.split('.');
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) => format!("{major}.{minor}"),
+        (Some(major), None) => format!("{major}.0"),
+        _ => trimmed.to_string(),
+    }
+}
+
+fn is_a2a_v1(protocol_version: &str) -> bool {
+    protocol_version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 1)
+}
+
+/// Replace localhost/127.0.0.1 in card interface URLs with the host from `base_url`.
+fn rewrite_card_localhost(card: &mut a2a::AgentCard, base_url: &str) -> Result<(), A2aError> {
+    let request_host = url::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()));
+    let Some(request_host) = request_host else {
+        return Ok(());
+    };
+    if is_localhost(&request_host) {
+        return Ok(());
+    }
+
+    for iface in &mut card.supported_interfaces {
+        iface.url = rewrite_localhost_url(&iface.url, &request_host);
+    }
+    Ok(())
+}
+
+fn rewrite_localhost_url(endpoint: &str, host: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(endpoint) else {
+        return endpoint.to_string();
+    };
+    match parsed.host_str() {
+        Some(h) if is_localhost(h) => {
+            if parsed.set_host(Some(host)).is_err() {
+                return endpoint.to_string();
+            }
+            parsed.to_string()
+        }
+        _ => endpoint.to_string(),
+    }
+}
+
+fn is_localhost(host: &str) -> bool {
+    let lower = host.to_ascii_lowercase();
+    lower == "localhost" || lower == "127.0.0.1"
 }
 
 async fn run_stream(
@@ -313,4 +422,48 @@ fn encode_stream_event(event: &StreamResponse) -> Result<String, A2aError> {
     let value = serde_json::to_value(event)?;
     let envelope = serde_json::json!({ "result": value });
     Ok(serde_json::to_string(&envelope)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_localhost_interface_urls() {
+        assert_eq!(
+            rewrite_localhost_url("http://localhost:17438/a2a", "192.168.92.23"),
+            "http://192.168.92.23:17438/a2a"
+        );
+        assert_eq!(
+            rewrite_localhost_url("http://127.0.0.1:17438/a2a", "192.168.92.23"),
+            "http://192.168.92.23:17438/a2a"
+        );
+        assert_eq!(
+            rewrite_localhost_url("http://192.168.1.1:17438/a2a", "192.168.92.23"),
+            "http://192.168.1.1:17438/a2a"
+        );
+    }
+
+    #[test]
+    fn adds_a2a_version_header_from_card() {
+        let headers = effective_request_headers(&HashMap::new(), "1.0");
+        assert_eq!(
+            headers.get(SVC_PARAM_VERSION).map(String::as_str),
+            Some("1.0")
+        );
+
+        let mut user = HashMap::new();
+        user.insert(SVC_PARAM_VERSION.into(), "0.3".into());
+        let headers = effective_request_headers(&user, "1.0");
+        assert_eq!(
+            headers.get(SVC_PARAM_VERSION).map(String::as_str),
+            Some("0.3")
+        );
+    }
+
+    #[test]
+    fn negotiates_sdk_version_when_card_is_v03() {
+        assert_eq!(negotiate_a2a_version("1.0"), "1.0");
+        assert_eq!(negotiate_a2a_version("0.3"), A2A_PROTOCOL_VERSION);
+    }
 }
