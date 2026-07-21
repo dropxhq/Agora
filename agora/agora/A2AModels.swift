@@ -358,6 +358,14 @@ struct ResultBlock: Identifiable, Codable, Equatable {
                 || mime.hasSuffix("+json")
         }
 
+        var isCSV: Bool {
+            let mime = (mediaType ?? "").lowercased()
+            return mime == "text/csv"
+                || mime == "application/csv"
+                || mime == "text/comma-separated-values"
+                || (filename?.lowercased().hasSuffix(".csv") == true)
+        }
+
         var imageData: Data? {
             guard isImage, let base64, !base64.isEmpty else { return nil }
             return Data(base64Encoded: base64)

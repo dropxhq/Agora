@@ -88,11 +88,14 @@ private struct FileBlockView: View {
                         .foregroundStyle(.secondary)
                 }
             } icon: {
-                Image(systemName: file.isImage ? "photo" : "doc")
+                Image(systemName: file.isImage ? "photo" : file.isCSV ? "tablecells" : "doc")
             }
 
             if file.isImage, let data = file.imageData {
                 ArtifactImageView(data: data)
+            } else if file.isCSV, let preview = file.previewText, !preview.isEmpty,
+                      let table = CSVTable.parse(preview), !table.rows.isEmpty {
+                CSVTableView(table: table)
             } else if let preview = file.previewText, !preview.isEmpty {
                 Text(preview)
                     .font(.system(.callout, design: .monospaced))
@@ -108,6 +111,116 @@ private struct FileBlockView: View {
     private var metaLine: String {
         let mime = file.mediaType ?? "application/octet-stream"
         return "\(mime) · \(ByteCountFormatter.string(fromByteCount: Int64(file.byteCount), countStyle: .file))"
+    }
+}
+
+/// Parsed CSV matrix (first row is treated as header when present).
+private struct CSVTable {
+    let rows: [[String]]
+
+    var columnCount: Int {
+        rows.map(\.count).max() ?? 0
+    }
+
+    func cell(row: Int, column: Int) -> String {
+        guard rows.indices.contains(row), rows[row].indices.contains(column) else {
+            return ""
+        }
+        return rows[row][column]
+    }
+
+    static func parse(_ text: String) -> CSVTable? {
+        let lines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+
+        guard !lines.isEmpty else { return nil }
+
+        let parsed = lines.map(parseLine)
+        let width = parsed.map(\.count).max() ?? 0
+        guard width > 0 else { return nil }
+
+        let normalized = parsed.map { row -> [String] in
+            if row.count == width { return row }
+            if row.count < width {
+                return row + Array(repeating: "", count: width - row.count)
+            }
+            return Array(row.prefix(width))
+        }
+        return CSVTable(rows: normalized)
+    }
+
+    /// RFC 4180–style field split: commas outside quotes; `""` → `"`.
+    private static func parseLine(_ line: String) -> [String] {
+        var fields: [String] = []
+        var current = ""
+        var inQuotes = false
+        var index = line.startIndex
+
+        while index < line.endIndex {
+            let ch = line[index]
+            if inQuotes {
+                if ch == "\"" {
+                    let next = line.index(after: index)
+                    if next < line.endIndex, line[next] == "\"" {
+                        current.append("\"")
+                        index = next
+                    } else {
+                        inQuotes = false
+                    }
+                } else {
+                    current.append(ch)
+                }
+            } else if ch == "\"" {
+                inQuotes = true
+            } else if ch == "," {
+                fields.append(current)
+                current = ""
+            } else {
+                current.append(ch)
+            }
+            index = line.index(after: index)
+        }
+        fields.append(current)
+        return fields
+    }
+}
+
+private struct CSVTableView: View {
+    let table: CSVTable
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(Array(table.rows.indices), id: \.self) { rowIndex in
+                    GridRow {
+                        ForEach(0..<table.columnCount, id: \.self) { columnIndex in
+                            let value = table.cell(row: rowIndex, column: columnIndex)
+                            Text(value.isEmpty ? "—" : value)
+                                .font(rowIndex == 0 ? .caption.weight(.semibold) : .caption)
+                                .foregroundStyle(.primary.opacity(value.isEmpty ? 0.35 : 1))
+                                .textSelection(.enabled)
+                                .frame(minWidth: 72, maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                        }
+                    }
+
+                    if rowIndex < table.rows.count - 1 {
+                        GridRow {
+                            Divider()
+                                .opacity(rowIndex == 0 ? 0.55 : 0.25)
+                                .gridCellColumns(table.columnCount)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

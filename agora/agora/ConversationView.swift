@@ -266,7 +266,7 @@ struct ThinkingItemView: View {
                     .font(.caption)
                     .frame(width: 14, alignment: .center)
                     .padding(.top, 2)
-                MarkdownText(content: text)
+                MarkdownText(content: text, style: .process)
                     .font(.subheadline)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
