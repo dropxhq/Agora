@@ -115,7 +115,7 @@ private struct FileBlockView: View {
 }
 
 /// Parsed CSV matrix (first row is treated as header when present).
-private struct CSVTable {
+private struct CSVTable: Sendable {
     let rows: [[String]]
 
     var columnCount: Int {
@@ -129,7 +129,7 @@ private struct CSVTable {
         return rows[row][column]
     }
 
-    static func parse(_ text: String) -> CSVTable? {
+    nonisolated static func parse(_ text: String) -> CSVTable? {
         let lines = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -154,7 +154,7 @@ private struct CSVTable {
     }
 
     /// RFC 4180–style field split: commas outside quotes; `""` → `"`.
-    private static func parseLine(_ line: String) -> [String] {
+    nonisolated private static func parseLine(_ line: String) -> [String] {
         var fields: [String] = []
         var current = ""
         var inQuotes = false

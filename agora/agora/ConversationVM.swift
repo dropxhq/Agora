@@ -106,7 +106,7 @@ class ConversationVM {
                     prompt: task.prompt,
                     skillId: task.skillId,
                     skillName: task.skillName,
-                    thinking: task.thinking.map(Self.persistThinkingItem),
+                    thinking: task.thinking.map { Self.persistThinkingItem($0) },
                     rounds: nil,
                     summary: task.summary,
                     resultBlocks: task.resultBlocks,
@@ -130,7 +130,7 @@ class ConversationVM {
 
         if let thinking = snapshot.thinking {
             let task = AITask(id: UUID().uuidString, prompt: "历史任务", state: .idle)
-            task.thinking = thinking.compactMap(Self.thinkingItem(from:))
+            task.thinking = thinking.compactMap { Self.thinkingItem(from: $0) }
             applyLegacySummary(snapshot.summary, to: task)
             task.state = TaskState.from(label: snapshot.state ?? "idle")
             task.errorMessage = snapshot.errorMessage
@@ -167,7 +167,7 @@ class ConversationVM {
             createdAt: persisted.createdAt
         )
         if let thinking = persisted.thinking, !thinking.isEmpty {
-            task.thinking = thinking.compactMap(Self.thinkingItem(from:))
+            task.thinking = thinking.compactMap { Self.thinkingItem(from: $0) }
         } else if let rounds = persisted.rounds {
             task.thinking = Self.flattenLegacyRounds(rounds)
         }

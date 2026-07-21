@@ -26,7 +26,19 @@ a2a-swift:
       echo "→ 安装 cargo-swift@0.11.1..."
       cargo install cargo-swift@0.11.1 -f
     fi
+
+    # Align C deps (aws-lc etc.) with the Xcode app deployment target so ld
+    # does not warn: object built for newer macOS than being linked.
+    # Match agora/agora.xcodeproj MACOSX_DEPLOYMENT_TARGET / IPHONEOS_DEPLOYMENT_TARGET.
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
+    export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-26.0}"
+    # Keep Apple Clang on the host macOS SDK while compiling darwin targets;
+    # cargo-swift still selects the correct SDK per-target internally.
+    export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+
     echo "→ 构建 AgoraA2A Swift Package..."
+    echo "  MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+    echo "  IPHONEOS_DEPLOYMENT_TARGET=$IPHONEOS_DEPLOYMENT_TARGET"
     cargo swift package \
       -n AgoraA2A \
       -p macos \
