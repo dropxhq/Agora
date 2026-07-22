@@ -39,7 +39,8 @@ struct MultilineMessageInput: View {
             .textFieldStyle(.plain)
             .multilineTextAlignment(.leading)
             .lineLimit(1...8)
-            .onKeyPress(.return) { press in
+            // Use the phases overload so the action receives KeyPress (for modifiers).
+            .onKeyPress(.return, phases: .down) { press in
                 if press.modifiers.contains(.shift) { return .ignored }
                 if autocompleteActive {
                     onAutocompleteAccept?()
