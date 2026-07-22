@@ -95,6 +95,9 @@ struct SidebarView: View {
         }
         .onAppear {
             syncSelectionFromStore()
+            for backend in store.backends {
+                store.loadAgentCard(for: backend)
+            }
         }
         .onChange(of: store.selectedSessionId) { _, newId in
             syncSelectionFromStore(preferredId: newId)
@@ -133,7 +136,7 @@ struct SidebarView: View {
             Button {
                 toggleCollapse(for: backend.id)
             } label: {
-                Label(backend.name, systemImage: "server.rack")
+                Label(backend.displayTitle, systemImage: "server.rack")
                     .labelStyle(.titleAndIcon)
             }
             .buttonStyle(.plain)
@@ -273,10 +276,14 @@ private struct BackendEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var backendID = UUID()
     @State private var name = ""
+    @State private var nickname = ""
     @State private var serverURL = "http://localhost:8000"
     @State private var headerEntries: [KeyValueEntry] = []
     @State private var metadataEntries: [KeyValueEntry] = []
     @State private var configTab: BackendConfigTab = .headers
+    @State private var isFetchingName = false
+    @State private var nameFetchError: String?
+    @State private var nameFetchGeneration = 0
 
     private enum BackendConfigTab: String, CaseIterable, Identifiable {
         case headers = "Headers"
@@ -290,13 +297,30 @@ private struct BackendEditorSheet: View {
             VStack(alignment: .leading, spacing: 0) {
                 Form {
                     Section("Backend") {
-                        TextField("名称", text: $name)
+                        LabeledContent("名称") {
+                            HStack(spacing: 8) {
+                                Text(nameDisplay)
+                                    .foregroundStyle(name.isEmpty ? .tertiary : .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
+                                    .textSelection(.enabled)
+                                if isFetchingName {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                        TextField("昵称（可选）", text: $nickname)
                         TextField("Server URL", text: $serverURL)
                             .textContentType(.URL)
 #if os(iOS)
                             .keyboardType(.URL)
                             .autocapitalization(.none)
 #endif
+                        if let nameFetchError {
+                            Text(nameFetchError)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
                 .formStyle(.grouped)
@@ -338,27 +362,34 @@ private struct BackendEditorSheet: View {
                         onSave(buildBackend())
                         dismiss()
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .onAppear {
                 switch mode {
                 case .add:
                     backendID = UUID()
-                    name = "Backend \(Int.random(in: 1...99))"
+                    name = ""
+                    nickname = ""
                     serverURL = "http://localhost:8000"
                     headerEntries = []
                     metadataEntries = []
                     configTab = .headers
+                    nameFetchError = nil
                 case .edit(let backend):
                     backendID = backend.id
                     name = backend.name
+                    nickname = backend.nickname
                     serverURL = backend.serverURL
                     headerEntries = BackendConfigParser.headerEntries(from: backend.requestHeaders)
                     metadataEntries = BackendConfigParser.metadataEntries(from: backend.messageMetadata)
                     configTab = .headers
+                    nameFetchError = nil
                 }
+                refreshNameFromAgentCard()
+            }
+            .onChange(of: serverURL) { _, _ in
+                refreshNameFromAgentCard()
             }
         }
 #if os(macOS)
@@ -366,10 +397,21 @@ private struct BackendEditorSheet: View {
 #endif
     }
 
+    private var nameDisplay: String {
+        if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return name
+        }
+        if isFetchingName {
+            return "正在从 Agent Card 获取…"
+        }
+        return "保存后从 Agent Card 自动获取"
+    }
+
     private func buildBackend() -> Backend {
         Backend(
             id: backendID,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
             serverURL: serverURL.trimmingCharacters(in: .whitespacesAndNewlines),
             requestHeaders: BackendConfigParser.serializeHeaders(headerEntries),
             messageMetadata: BackendConfigParser.serializeMetadata(metadataEntries)
@@ -380,6 +422,40 @@ private struct BackendEditorSheet: View {
         switch mode {
         case .add: return "添加 Backend"
         case .edit: return "编辑 Backend"
+        }
+    }
+
+    private func refreshNameFromAgentCard() {
+        let urlString = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: urlString), url.scheme != nil, url.host != nil else {
+            return
+        }
+
+        nameFetchGeneration += 1
+        let generation = nameFetchGeneration
+        isFetchingName = true
+        nameFetchError = nil
+        let draft = buildBackend()
+        Task { @MainActor in
+            defer {
+                if generation == nameFetchGeneration {
+                    isFetchingName = false
+                }
+            }
+            do {
+                let card = try await draft.makeA2AClient(baseURL: url, includeMessageMetadata: false).fetchAgentCard()
+                guard generation == nameFetchGeneration else { return }
+                let cardName = card.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cardName.isEmpty {
+                    name = cardName
+                }
+                nameFetchError = nil
+            } catch {
+                guard generation == nameFetchGeneration else { return }
+                if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    nameFetchError = "无法获取 Agent Card 名称"
+                }
+            }
         }
     }
 }

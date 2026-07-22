@@ -160,10 +160,20 @@ class WorkspaceStore {
                 let card = try await backend.makeA2AClient(baseURL: url, includeMessageMetadata: false).fetchAgentCard()
                 agentCards[backendId] = card
                 agentCardErrors[backendId] = nil
+                syncBackendName(from: card, backendId: backendId)
             } catch {
                 agentCardErrors[backendId] = AgentCardErrorMessage.message(for: error, serverURL: backend.serverURL)
             }
         }
+    }
+
+    /// Keep `Backend.name` aligned with the latest Agent Card.
+    private func syncBackendName(from card: AgentCard, backendId: UUID) {
+        guard let idx = backends.firstIndex(where: { $0.id == backendId }) else { return }
+        let cardName = card.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cardName.isEmpty, backends[idx].name != cardName else { return }
+        backends[idx].name = cardName
+        save()
     }
 
     func invalidateAgentCard(for backendId: UUID) {
@@ -209,7 +219,7 @@ class WorkspaceStore {
 
     private func migrateFromLegacySettings() {
         let legacyURL = UserDefaults.standard.string(forKey: "serverURL") ?? "http://localhost:8000"
-        let backend = Backend(name: "Local", serverURL: legacyURL)
+        let backend = Backend(nickname: "Local", serverURL: legacyURL)
         backends = [backend]
         sessions = [Session(backendId: backend.id)]
         selectedSessionId = sessions.first?.id

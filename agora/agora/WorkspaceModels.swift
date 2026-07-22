@@ -2,7 +2,10 @@ import Foundation
 
 struct Backend: Identifiable, Codable, Hashable {
     var id: UUID
+    /// Canonical name from the A2A Agent Card (`card.name`). Synced on fetch.
     var name: String
+    /// Optional user-facing label. When non-empty, sidebar shows this instead of `name`.
+    var nickname: String
     var serverURL: String
     /// One header per line: `Header-Name: value`
     var requestHeaders: String
@@ -11,26 +14,38 @@ struct Backend: Identifiable, Codable, Hashable {
 
     init(
         id: UUID = UUID(),
-        name: String,
+        name: String = "",
+        nickname: String = "",
         serverURL: String,
         requestHeaders: String = "",
         messageMetadata: String = ""
     ) {
         self.id = id
         self.name = name
+        self.nickname = nickname
         self.serverURL = serverURL
         self.requestHeaders = requestHeaders
         self.messageMetadata = messageMetadata
     }
 
+    /// Sidebar / UI title: nickname if set, otherwise Agent Card name.
+    var displayTitle: String {
+        let nick = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !nick.isEmpty { return nick }
+        let cardName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cardName.isEmpty { return cardName }
+        return "Backend"
+    }
+
     enum CodingKeys: String, CodingKey {
-        case id, name, serverURL, requestHeaders, messageMetadata
+        case id, name, nickname, serverURL, requestHeaders, messageMetadata
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        nickname = try container.decodeIfPresent(String.self, forKey: .nickname) ?? ""
         serverURL = try container.decode(String.self, forKey: .serverURL)
         requestHeaders = try container.decodeIfPresent(String.self, forKey: .requestHeaders) ?? ""
         messageMetadata = try container.decodeIfPresent(String.self, forKey: .messageMetadata) ?? ""
@@ -54,7 +69,7 @@ enum BackendConfigParser {
 
     /// Headers with `@random:*` tokens already resolved for the current request.
     static func resolvedHeaders(_ text: String) -> [String: String] {
-        parseHeaders(text).mapValues(resolveStringValue)
+        parseHeaders(text).mapValues { resolveStringValue($0) }
     }
 
     static func headerEntries(from text: String) -> [KeyValueEntry] {

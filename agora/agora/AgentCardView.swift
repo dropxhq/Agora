@@ -186,7 +186,7 @@ struct AgentCardEmptyStateView: View {
     var body: some View {
         Group {
             if let card = store.agentCard(for: backend.id) {
-                AgentCardView(card: card, backendName: backend.name)
+                AgentCardView(card: card, backendName: backend.displayTitle)
             } else if store.isLoadingAgentCard(for: backend.id) {
                 ProgressView("加载 Agent 信息…")
                     .frame(maxWidth: .infinity, minHeight: 240)
