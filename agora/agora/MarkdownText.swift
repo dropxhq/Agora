@@ -43,11 +43,16 @@ struct MarkdownText: View {
             FontSize(16)
         }
 
+    /// Hard cap for reasoning / thinking-process text (points).
+    /// Headings must not exceed this — Theme.basic's h1/h2 use 1.5–2em otherwise.
+    private static let processFontSize: CGFloat = 13
+
     /// Compact secondary-colored theme for reasoning / tool-process copy.
     /// Starts from `.basic` so lists / paragraphs keep working after HTML→Markdown.
     private static let processTheme: Theme = Theme.basic
         .text {
             ForegroundColor(.secondary)
+            FontSize(processFontSize)
         }
         .code {
             ForegroundColor(.secondary)
@@ -65,6 +70,24 @@ struct MarkdownText: View {
         .link {
             ForegroundColor(.secondary)
         }
+        .heading1 { configuration in
+            processHeading(configuration)
+        }
+        .heading2 { configuration in
+            processHeading(configuration)
+        }
+        .heading3 { configuration in
+            processHeading(configuration)
+        }
+        .heading4 { configuration in
+            processHeading(configuration)
+        }
+        .heading5 { configuration in
+            processHeading(configuration)
+        }
+        .heading6 { configuration in
+            processHeading(configuration)
+        }
         .paragraph { configuration in
             configuration.label
                 .fixedSize(horizontal: false, vertical: true)
@@ -79,6 +102,18 @@ struct MarkdownText: View {
             configuration.label
                 .markdownMargin(top: .em(0.1))
         }
+
+    @ViewBuilder
+    private static func processHeading(_ configuration: BlockConfiguration) -> some View {
+        configuration.label
+            .markdownMargin(top: .em(0.35), bottom: .em(0.15))
+            .markdownTextStyle {
+                ForegroundColor(.secondary)
+                FontWeight(.semibold)
+                // Cap at body size — never larger than `processFontSize`.
+                FontSize(.em(1))
+            }
+    }
 
     private var preparedContent: String {
         let converted = Self.convertEmbeddedHTMLToMarkdown(in: normalizedContent)
