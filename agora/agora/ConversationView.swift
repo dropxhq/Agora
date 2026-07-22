@@ -7,6 +7,7 @@ struct ConversationView: View {
     var onEditBackend: () -> Void = {}
 
     @State private var input = ""
+    @State private var showAgentCard = false
 
     private var vm: ConversationVM {
         store.vm(for: session.id)
@@ -22,6 +23,28 @@ struct ConversationView: View {
         conversationPanel(vm: vm)
             .navigationTitle(session.title)
             .modifier(AgoraInlineNavigationTitleModifier())
+            .toolbar {
+                if !vm.rootTasks.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showAgentCard = true
+                        } label: {
+                            Label("Agent", systemImage: "cpu")
+                        }
+                        .help("查看 Agent Card")
+                    }
+                }
+            }
+            .sheet(isPresented: $showAgentCard) {
+                AgentCardSheet(
+                    backend: backend,
+                    store: store,
+                    onEditBackend: {
+                        showAgentCard = false
+                        onEditBackend()
+                    }
+                )
+            }
             .onAppear {
                 bindVM()
                 store.loadAgentCard(for: backend)
@@ -29,6 +52,7 @@ struct ConversationView: View {
             .onChange(of: session.id) { _, _ in
                 bindVM()
                 input = ""
+                showAgentCard = false
             }
     }
 
@@ -366,6 +390,37 @@ struct ConnectionErrorBanner: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct AgentCardSheet: View {
+    let backend: Backend
+    let store: WorkspaceStore
+    var onEditBackend: () -> Void = {}
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                AgentCardEmptyStateView(
+                    backend: backend,
+                    store: store,
+                    onEditBackend: onEditBackend
+                )
+                .padding()
+            }
+            .navigationTitle("Agent Card")
+            .modifier(AgoraInlineNavigationTitleModifier())
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+#if os(macOS)
+        .frame(width: 640, height: 560)
+#endif
     }
 }
 
