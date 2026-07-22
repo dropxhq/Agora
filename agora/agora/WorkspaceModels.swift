@@ -52,10 +52,15 @@ enum BackendConfigParser {
         return headers
     }
 
+    /// Headers with `@random:*` tokens already resolved for the current request.
+    static func resolvedHeaders(_ text: String) -> [String: String] {
+        parseHeaders(text).mapValues(resolveStringValue)
+    }
+
     static func headerEntries(from text: String) -> [KeyValueEntry] {
         parseHeaders(text)
             .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
-            .map { KeyValueEntry(key: $0.key, value: $0.value) }
+            .map { KeyValueEntry.fromPersistedValue(key: $0.key, value: $0.value) }
     }
 
     static func serializeHeaders(_ entries: [KeyValueEntry]) -> String {
@@ -64,7 +69,7 @@ enum BackendConfigParser {
             .map {
                 (
                     $0.key.trimmingCharacters(in: .whitespaces),
-                    $0.value.trimmingCharacters(in: .whitespaces)
+                    $0.persistedValue.trimmingCharacters(in: .whitespaces)
                 )
             }
             .filter { !$0.0.isEmpty }
@@ -82,13 +87,23 @@ enum BackendConfigParser {
         return object
     }
 
+    /// Metadata with `@random:*` tokens already resolved for the current request.
+    static func resolvedMetadataJSON(_ text: String) -> [String: Any]? {
+        guard let object = parseMetadataJSON(text) else { return nil }
+        var resolved: [String: Any] = [:]
+        for (key, value) in object {
+            resolved[key] = resolveJSONValue(value)
+        }
+        return resolved
+    }
+
     static func metadataEntries(from text: String) -> [KeyValueEntry] {
         guard let object = parseMetadataJSON(text) else { return [] }
         return object
             .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
             .map { key, value in
                 let (valueType, stringValue) = inferValueType(value)
-                return KeyValueEntry(key: key, valueType: valueType, value: stringValue)
+                return KeyValueEntry.fromPersistedValue(key: key, value: stringValue, valueType: valueType)
             }
     }
 
@@ -97,7 +112,13 @@ enum BackendConfigParser {
         for entry in entries where entry.isEnabled {
             let key = entry.key.trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else { continue }
-            object[key] = typedJSONValue(type: entry.valueType, text: entry.value)
+            switch entry.valueMode {
+            case .random:
+                // Persist the token so it can be re-resolved on each request.
+                object[key] = entry.randomKind.token
+            case .staticValue:
+                object[key] = typedJSONValue(type: entry.valueType, text: entry.value)
+            }
         }
         guard !object.isEmpty,
               let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
@@ -105,6 +126,21 @@ enum BackendConfigParser {
             return ""
         }
         return json
+    }
+
+    static func resolveStringValue(_ text: String) -> String {
+        if let kind = RandomValueKind.parse(token: text) {
+            return kind.generateString()
+        }
+        return text
+    }
+
+    static func resolveJSONValue(_ value: Any) -> Any {
+        guard let string = value as? String,
+              let kind = RandomValueKind.parse(token: string) else {
+            return value
+        }
+        return kind.generateJSONValue()
     }
 
     private static func inferValueType(_ value: Any) -> (KeyValueFieldType, String) {
@@ -169,11 +205,11 @@ enum BackendConfigParser {
 
 extension Backend {
     var parsedRequestHeaders: [String: String] {
-        BackendConfigParser.parseHeaders(requestHeaders)
+        BackendConfigParser.resolvedHeaders(requestHeaders)
     }
 
     var parsedMessageMetadata: [String: Any]? {
-        BackendConfigParser.parseMetadataJSON(messageMetadata)
+        BackendConfigParser.resolvedMetadataJSON(messageMetadata)
     }
 
     func makeA2AClient(baseURL: URL, includeMessageMetadata: Bool = true) -> A2AClient {

@@ -300,7 +300,8 @@ private struct BackendEditorSheet: View {
                     }
                 }
                 .formStyle(.grouped)
-                .frame(maxHeight: 130)
+                .scrollDisabled(true)
+                .fixedSize(horizontal: false, vertical: true)
 
                 Divider()
 

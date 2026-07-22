@@ -282,8 +282,9 @@ private struct ToolCallRow: View {
     var expandGeneration: Int = 0
     @State private var detailsExpanded = false
 
+    /// Only the tool result is expandable; name + desc stay on one header line, args stay hidden.
     private var hasDetails: Bool {
-        call.result != nil || !call.args.isEmpty || !(call.desc?.isEmpty ?? true)
+        call.result != nil
     }
 
     var body: some View {
@@ -300,7 +301,7 @@ private struct ToolCallRow: View {
                         .frame(width: 14, alignment: .center)
                     Text(call.tool.displayName)
                         .font(.caption.monospaced())
-                    if let desc = call.desc, !desc.isEmpty, !detailsExpanded {
+                    if let desc = call.desc, !desc.isEmpty {
                         Text("· \(desc)")
                             .font(.caption)
                             .lineLimit(1)
@@ -317,35 +318,19 @@ private struct ToolCallRow: View {
             .buttonStyle(.plain)
             .disabled(!hasDetails)
 
-            if detailsExpanded {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let desc = call.desc, !desc.isEmpty {
-                        Text(desc)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if !call.args.isEmpty {
-                        Text(call.argsPreview)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if let result = call.result {
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: result.ok ? "tray" : "exclamationmark.triangle")
-                                .font(.caption)
-                                .frame(width: 14, alignment: .center)
-                                .padding(.top, 1)
-                            Text(result.result)
-                                .font(.caption)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .foregroundStyle(result.ok ? Color.secondary : Color.red)
-                    }
+            if detailsExpanded, let result = call.result {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: result.ok ? "tray" : "exclamationmark.triangle")
+                        .font(.caption)
+                        .frame(width: 14, alignment: .center)
+                        .padding(.top, 1)
+                    Text(result.result)
+                        .font(.caption)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .foregroundStyle(result.ok ? Color.secondary : Color.red)
                 .padding(.leading, 20)
             }
         }

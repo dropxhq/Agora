@@ -9,11 +9,89 @@ enum KeyValueFieldType: String, CaseIterable, Identifiable {
     var label: String { rawValue }
 }
 
+enum KeyValueValueMode: String, CaseIterable, Identifiable {
+    case staticValue
+    case random
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .staticValue: return "静态"
+        case .random: return "随机"
+        }
+    }
+}
+
+enum RandomValueKind: String, CaseIterable, Identifiable {
+    case uuid
+    case int
+    case hex16
+    case alnum12
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .uuid: return "UUID"
+        case .int: return "整数"
+        case .hex16: return "Hex"
+        case .alnum12: return "字符串"
+        }
+    }
+
+    /// Persisted token written into header/metadata value fields.
+    var token: String {
+        switch self {
+        case .uuid: return "@random:uuid"
+        case .int: return "@random:int"
+        case .hex16: return "@random:hex:16"
+        case .alnum12: return "@random:alnum:12"
+        }
+    }
+
+    static func parse(token: String) -> RandomValueKind? {
+        switch token.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "@random:uuid": return .uuid
+        case "@random:int": return .int
+        case "@random:hex:16", "@random:hex": return .hex16
+        case "@random:alnum:12", "@random:alnum", "@random:string": return .alnum12
+        default: return nil
+        }
+    }
+
+    func generateString() -> String {
+        switch self {
+        case .uuid:
+            return UUID().uuidString
+        case .int:
+            return String(Int.random(in: 0...999_999_999))
+        case .hex16:
+            let chars = Array("0123456789abcdef")
+            return String((0..<16).map { _ in chars.randomElement()! })
+        case .alnum12:
+            let chars = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+            return String((0..<12).map { _ in chars.randomElement()! })
+        }
+    }
+
+    func generateJSONValue() -> Any {
+        switch self {
+        case .int:
+            return Int.random(in: 0...999_999_999)
+        case .uuid, .hex16, .alnum12:
+            return generateString()
+        }
+    }
+}
+
 struct KeyValueEntry: Identifiable, Equatable {
     let id: UUID
     var isEnabled: Bool
     var key: String
     var valueType: KeyValueFieldType
+    var valueMode: KeyValueValueMode
+    var randomKind: RandomValueKind
     var value: String
     var note: String
 
@@ -22,6 +100,8 @@ struct KeyValueEntry: Identifiable, Equatable {
         isEnabled: Bool = true,
         key: String = "",
         valueType: KeyValueFieldType = .string,
+        valueMode: KeyValueValueMode = .staticValue,
+        randomKind: RandomValueKind = .uuid,
         value: String = "",
         note: String = ""
     ) {
@@ -29,8 +109,39 @@ struct KeyValueEntry: Identifiable, Equatable {
         self.isEnabled = isEnabled
         self.key = key
         self.valueType = valueType
+        self.valueMode = valueMode
+        self.randomKind = randomKind
         self.value = value
         self.note = note
+    }
+
+    /// Value written to storage (static text or random token).
+    var persistedValue: String {
+        switch valueMode {
+        case .staticValue:
+            return value
+        case .random:
+            return randomKind.token
+        }
+    }
+
+    static func fromPersistedValue(
+        key: String,
+        value: String,
+        valueType: KeyValueFieldType = .string,
+        note: String = ""
+    ) -> KeyValueEntry {
+        if let kind = RandomValueKind.parse(token: value) {
+            return KeyValueEntry(
+                key: key,
+                valueType: valueType,
+                valueMode: .random,
+                randomKind: kind,
+                value: "",
+                note: note
+            )
+        }
+        return KeyValueEntry(key: key, valueType: valueType, value: value, note: note)
     }
 }
 
@@ -41,9 +152,9 @@ enum KeyValueTableMode {
     var footer: String {
         switch self {
         case .headers:
-            return "附加到所有请求（含 Agent Card），用于鉴权等。"
+            return "附加到所有请求（含 Agent Card），用于鉴权等。随机值在每次请求时重新生成。"
         case .metadata:
-            return "合并到每条 user message 的 metadata 字段。"
+            return "合并到每条 user message 的 metadata 字段。随机值在每次请求时重新生成。"
         }
     }
 }
@@ -115,11 +226,8 @@ struct KeyValueTableEditor: View {
                     .padding(.horizontal, 6)
             }
 
-            tableField(
-                placeholder: "值",
-                text: binding(for: entry.id, keyPath: \.value),
-                flexible: true
-            )
+            valueEditor(for: entry)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             tableField(
                 placeholder: "说明",
@@ -230,6 +338,42 @@ struct KeyValueTableEditor: View {
         } else {
             field.frame(width: width, alignment: .leading)
         }
+    }
+
+    private func valueEditor(for entry: KeyValueEntry) -> some View {
+        HStack(spacing: 4) {
+            Picker("", selection: binding(for: entry.id, keyPath: \.valueMode)) {
+                ForEach(KeyValueValueMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 64, alignment: .leading)
+
+            if entry.valueMode == .staticValue {
+                TextField("值", text: binding(for: entry.id, keyPath: \.value))
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 6)
+#if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+#endif
+            } else {
+                Picker("", selection: binding(for: entry.id, keyPath: \.randomKind)) {
+                    ForEach(RandomValueKind.allCases) { kind in
+                        Text(kind.label).tag(kind)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 4)
+        .font(.callout)
     }
 
     private func typePicker(for id: UUID) -> some View {
