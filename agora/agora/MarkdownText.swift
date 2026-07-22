@@ -34,7 +34,8 @@ struct MarkdownText: View {
     }
 
     /// Compact secondary-colored theme for reasoning / tool-process copy.
-    private static let processTheme: Theme = Theme()
+    /// Starts from `.basic` so lists / paragraphs keep working after HTML→Markdown.
+    private static let processTheme: Theme = Theme.basic
         .text {
             ForegroundColor(.secondary)
         }
@@ -58,11 +59,21 @@ struct MarkdownText: View {
             configuration.label
                 .fixedSize(horizontal: false, vertical: true)
                 .relativeLineSpacing(.em(0.15))
-                .markdownMargin(top: .zero, bottom: .zero)
+                .markdownMargin(top: .zero, bottom: .em(0.35))
+        }
+        .list { configuration in
+            configuration.label
+                .markdownMargin(top: .zero, bottom: .em(0.35))
+        }
+        .listItem { configuration in
+            configuration.label
+                .markdownMargin(top: .em(0.1))
         }
 
     private var preparedContent: String {
-        Self.convertEmbeddedHTMLToMarkdown(in: normalizedContent)
+        let converted = Self.convertEmbeddedHTMLToMarkdown(in: normalizedContent)
+        // HTML→MD often yields `**标签：**值`; CommonMark leaves those `**` literal.
+        return Self.fixCommonMarkEmphasisDelimiters(in: converted)
     }
 
     private var normalizedContent: String {
@@ -104,6 +115,23 @@ struct MarkdownText: View {
         } catch {
             return text
         }
+    }
+
+    /// CommonMark cannot close emphasis when the closing `**`/`__` is both left- and
+    /// right-flanking — typical after HTML `<strong>标签：</strong>值` becomes
+    /// `**标签：**值`. Move the trailing punctuation outside the delimiters.
+    static func fixCommonMarkEmphasisDelimiters(in text: String) -> String {
+        let pattern = #"(\*\*|__)(.+?)([:：,，.。;；!！?？、])(\1)(?=\S)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(
+            in: text,
+            options: [],
+            range: range,
+            withTemplate: "$1$2$1$3"
+        )
     }
 
     /// Replace fenced and inline code with opaque placeholders so HTML detection /
