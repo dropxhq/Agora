@@ -17,8 +17,10 @@ struct MarkdownText: View {
         Group {
             switch style {
             case .content:
+                // Avoid Theme.gitHub's opaque BackgroundColor(.background) — in dark mode
+                // that paints #18191d over the window chrome and creates a visible band.
                 Markdown(preparedContent)
-                    .markdownTheme(.gitHub)
+                    .markdownTheme(Self.contentTheme)
             case .process:
                 // Bake secondary into the theme — MarkdownUI AttributedString
                 // ignores parent `.foregroundStyle`, so ambient color alone is not enough.
@@ -32,6 +34,14 @@ struct MarkdownText: View {
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// Result markdown: GitHub layout, but transparent so it matches the app surface.
+    private static let contentTheme: Theme = Theme.gitHub
+        .text {
+            ForegroundColor(.primary)
+            BackgroundColor(nil)
+            FontSize(16)
+        }
 
     /// Compact secondary-colored theme for reasoning / tool-process copy.
     /// Starts from `.basic` so lists / paragraphs keep working after HTML→Markdown.
